@@ -117,6 +117,10 @@ func TestSelectRejectsInvalidInputsWithoutPartialPayload(t *testing.T) {
 		{"duplicate fact", "q", []string{"same", "same"}, 3, 832},
 		{"invalid UTF8 fact", "q", []string{"\xff"}, 3, 832},
 		{"invalid UTF8 query", "\xff", []string{"valid"}, 3, 832},
+		// GO-2026-5970: reject malformed normalization input at the boundary,
+		// including when an earlier candidate is valid.
+		{"malformed normalization query", "\xf3\xcc\x80", []string{"valid"}, 3, 832},
+		{"malformed normalization candidate", "q", []string{"valid", "\xf3\xcc\x80"}, 3, 832},
 		{"oversized fact", "q", []string{strings.Repeat("x", MaxTextBytes+1)}, 3, 832},
 		{"oversized query", strings.Repeat("x", MaxTextBytes+1), []string{"valid"}, 3, 832},
 		{"oversized snapshot", "q", tooMuch, 3, 832},
