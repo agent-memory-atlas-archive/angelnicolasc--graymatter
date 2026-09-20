@@ -57,11 +57,13 @@ an absence branch `{"type":"object","additionalProperties":false,"required":
 `additionalProperties: false` applies to every branch and rejects both
 payloads.
 
-**Staged migration.** `"empty"` is opt-in in v0.20.0. The default flips to
-`"empty"` in v0.21.0, announced in the v0.20.0 changelog and in
-`docs/api-stability.md` (the prior-minor notice the deprecation rule
-requires). `"error"` remains accepted as the legacy behaviour throughout
-v0.x, so no caller breaks at either step.
+**Staged migration.** `"empty"` is opt-in in v0.20.0, whose default remains
+`"error"`. Changing the default to `"empty"` in v0.21.0 is conditional on a
+successful real OpenChamber/OpenCode smoke and prior-minor notice in the
+released changelog and `docs/api-stability.md`. If the union is rejected,
+keep `"error"` as the default and defer the change. Explicit `"error"`
+remains accepted as the legacy behaviour throughout v0.x; callers depending
+on absence being an error must select it before any default change.
 
 **Fallback if a real client rejects `oneOf`.** Collapse the output schema to a
 single permissive object declaring all six keys (`id`, `created_at`, `state`,
@@ -108,15 +110,17 @@ because the union is validated on every structured result from that release.
 
 ## Reversal condition
 
-The real-client gate must pass before v0.20.0 ships: the union schema ships in
-that release and strict clients validate it on every structured result. If the
-OpenChamber/OpenCode smoke run (or field reports from other strict clients)
-shows `oneOf` output schemas being rejected or mis-handled, apply the
-permissive single-object fallback above in the next release after detection
-(at latest with the v0.21.0 default flip), and record the client/version
-evidence in this ADR. Keep `"error"` as the default until a smoke run re-proves
-the schema on a real client. If no such report appears, flip the default in
-v0.21.0 as announced. If the flip then produces reports of behavioural
-breakage that opt-in adoption did not reveal, keep `"error"` as the default
-for the remainder of v0.x and reopen the contract question with the breakage
-evidence rather than extending the flip.
+The real-client gate must pass before v0.20.0 ships: strict clients validate
+the output schema on every structured result. If the pre-release
+OpenChamber/OpenCode smoke rejects or mis-handles `oneOf`, apply the
+permissive single-object fallback above and repeat the smoke before
+publishing v0.20.0. Record the client/version evidence in this ADR, keep
+`"error"` as the default, and defer the default change.
+
+Later field reports of schema incompatibility also suspend any default
+change until the fallback passes a real-client smoke. A default change
+requires affirmative client evidence and prior-minor notice; absence of
+reports alone is insufficient. If a later default change produces reports
+of behavioural breakage that opt-in adoption did not reveal, restore
+`"error"` as the default for the remainder of v0.x and reopen the contract
+question with the breakage evidence.

@@ -14,7 +14,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Notes
 
-- **`checkpoint_resume`'s default becomes `on_missing: "empty"` in v0.21.0.** v0.20.0 ships the option opt-in so callers can adopt and observe the additive result before absence stops being an error; `"error"` stays accepted as the legacy behaviour throughout v0.x. The flip is announced here and in `docs/api-stability.md`, per the prior-minor notice rule.
+- **A future `checkpoint_resume` default of `on_missing: "empty"` is conditional on real-client validation.** v0.20.0 keeps `"error"` as the default. A change in v0.21.0 may proceed only after a successful OpenChamber/OpenCode smoke and prior-minor notice in the released changelog and `docs/api-stability.md`. If the client rejects the union schema, apply and validate the documented fallback before publishing v0.20.0, keep the default as `"error"`, and defer the default change. Explicit `"error"` remains accepted throughout v0.x.
 
 ---
 

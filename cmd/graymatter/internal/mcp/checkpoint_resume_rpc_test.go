@@ -198,8 +198,20 @@ func TestCheckpointResumeJSONRPCWireContract(t *testing.T) {
 		t.Fatalf("default absence must omit structuredContent on the wire, got %s", missing.Result.StructuredContent)
 	}
 
+	// Explicit error mode must preserve the same wire result as omission.
+	explicitMissing := callToolJSONRPC(t, s, 6, "checkpoint_resume", map[string]any{
+		"agent_id":   "rpc-ghost",
+		"on_missing": "error",
+	})
+	if !explicitMissing.Result.IsError || len(explicitMissing.Result.StructuredContent) != 0 {
+		t.Fatalf("on_missing=error absence must be a text-only error: %+v", explicitMissing.Result)
+	}
+	if !reflect.DeepEqual(explicitMissing.Result, missing.Result) {
+		t.Fatalf("explicit error absence = %+v, want default result %+v", explicitMissing.Result, missing.Result)
+	}
+
 	// on_missing="empty": successful, machine-readable absence (branch 2).
-	empty := callToolJSONRPC(t, s, 6, "checkpoint_resume", map[string]any{
+	empty := callToolJSONRPC(t, s, 7, "checkpoint_resume", map[string]any{
 		"agent_id":   "rpc-ghost",
 		"on_missing": "empty",
 	})
@@ -228,7 +240,7 @@ func TestCheckpointResumeJSONRPCWireContract(t *testing.T) {
 	}
 
 	// Invalid values are rejected with a text-only error result.
-	bad := callToolJSONRPC(t, s, 7, "checkpoint_resume", map[string]any{
+	bad := callToolJSONRPC(t, s, 8, "checkpoint_resume", map[string]any{
 		"agent_id":   "rpc-ghost",
 		"on_missing": "sometimes",
 	})

@@ -194,9 +194,13 @@ their wording may change. `checkpoint_resume` with no checkpoint returns such
 an error **by default**; the optional `on_missing` parameter (`"error"` — the
 default — or `"empty"`) lets a caller opt into the successful
 `{"found": false, "agent_id"}` result above instead. This is an additive
-option, not a behaviour change for existing callers; the default becomes
-`"empty"` in **v0.21.0** (prior-minor notice, per the deprecation rule above),
-and `"error"` remains accepted as the legacy behaviour throughout v0.x.
+option, not a behaviour change for existing callers. A default change to
+`"empty"` in **v0.21.0** is conditional on a successful real
+OpenChamber/OpenCode smoke and prior-minor notice in the released changelog
+and this document, per the deprecation rule above. If the client rejects the
+union schema, apply and validate the documented fallback before publishing
+v0.20.0, keep `"error"` as the default, and defer the default change.
+Explicit `"error"` remains accepted as the legacy behaviour throughout v0.x.
 Storage, daemon, and corrupt-record failures stay prose-only in both modes. The
 former `{"error": "not_found", "agent_id"}` payload violated the declared
 success schema and was removed to prevent strict clients from rejecting the
