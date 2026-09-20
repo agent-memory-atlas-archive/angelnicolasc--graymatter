@@ -10,26 +10,26 @@
 //
 // What the benchmark checks instead is machine-relative:
 //
-//	1. recall delta     user-prompt p99 − pre-compact p99 ≤ 200 ms
-//	   (pre-compact measures this machine's spawn+connect+checkpoint cost;
-//	   the delta isolates the recall's marginal cost — the part the
-//	   hot-path optimizations own, and where a reintroduced double
-//	   tokenize or full decode shows up immediately)
-//	2. session-end delta session-end p99 − pre-compact p99 ≤ 200 ms
-//	   (the detached consolidation spawn must add almost nothing)
-//	3. scaling          (Recall(10k)/Recall(500)) / (10000/500)
-//	   ≤ recallScalingMaxNormalized (1.0x is linear; catches algorithmic
-//	   blowups — accidental O(n²) passes, full re-decodes)
+//  1. recall delta     user-prompt median − pre-compact median ≤ 200 ms
+//     (pre-compact measures this machine's connect+checkpoint cost;
+//     the delta isolates the recall's marginal cost — the part the
+//     hot-path optimizations own, and where a reintroduced double
+//     tokenize or full decode shows up immediately)
+//  2. session-end delta session-end median − pre-compact median ≤ 200 ms
+//     (the detached consolidation spawn must add almost nothing)
+//  3. scaling          (Recall(10k)/Recall(500)) / (10000/500)
+//     ≤ recallScalingMaxNormalized (1.0x is linear; catches algorithmic
+//     blowups — accidental O(n²) passes, full re-decodes)
 //
 // Absolute numbers are still measured and printed: they are reference data
 // for humans, and the published reference-hardware figure (user-prompt p99
 // 121 ms on the dev machine that set the budgets) stays in the README beside
 // the checks this benchmark reports. CI does not block merges on this result.
 //
-// The queries deliberately overlap the seeded corpus so every measured run
-// produces a distinct injected block — an unmatched query returns the same
-// recency top-3 every time, and the runner's identical-block throttle would
-// (correctly) suppress it, measuring nothing.
+// Both policies run through the real hook at both store sizes. Queries overlap
+// the corpus and each prompt has its own session id, so identical-block
+// throttling cannot suppress a sample. Hook-internal and process wall times
+// are reported separately; only wall time includes process creation.
 //
 // Usage:
 //
@@ -100,159 +100,190 @@ func run(stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("temp dir: %w", err)
 	}
-
-	storeDir := filepath.Join(root, "store")
-	workDir := filepath.Join(root, benchAgent) // basename → the seeded agent id
+	defer func() { _ = os.RemoveAll(root) }()
+	workDir := filepath.Join(root, benchAgent)
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return fmt.Errorf("work dir: %w", err)
 	}
-
-	// Keep the dependent cleanup order explicit: stop the daemon while the
-	// built binary still exists, then remove the binary and the temp root.
-	// Every step is best-effort, including paths that fail before the build.
-	var binaryPath string
-	var cleanupBinary func()
-	defer func() {
-		if binaryPath != "" {
-			stop := exec.Command(binaryPath, "--dir", storeDir, "daemon", "stop")
-			stop.Stdout = io.Discard
-			stop.Stderr = io.Discard
-			_ = stop.Run()
-			time.Sleep(500 * time.Millisecond)
-		}
-		if cleanupBinary != nil {
-			cleanupBinary()
-		}
-		_ = os.RemoveAll(root)
-	}()
-
-	if err := seedStore(storeDir); err != nil {
-		return fmt.Errorf("seed: %w", err)
-	}
-
-	// Scaling gate (gate 3): measured in-process against the library while
-	// this process still owns the store — before any daemon exists to hold
-	// the lock. The ratio is hardware-invariant: linear-ish growth passes on
-	// every runner; an accidental O(n²) pass cannot.
-	scalingRatio, err := measureRecallScaling(storeDir)
-	if err != nil {
-		return fmt.Errorf("scaling: %w", err)
-	}
-
 	binary, cleanup, err := buildBinary(root)
 	if err != nil {
 		return err
 	}
-	binaryPath = binary
-	cleanupBinary = cleanup
-
-	runHook := func(event, payload string) (sample, string) {
-		start := time.Now()
-		out, err := execHook(binary, workDir, storeDir, event, payload)
-		wall := time.Since(start)
-		if err != nil {
-			return sample{event: event}, fmt.Sprintf("%s: %v: %s", event, err, out)
-		}
-		internal, perr := lastHookInternalMs(storeDir)
-		if perr != nil {
-			return sample{event: event}, fmt.Sprintf("%s: hooks.log: %v", event, perr)
-		}
-		if internal < 0 {
-			return sample{event: event}, fmt.Sprintf("%s: hooks.log carried no ms field", event)
-		}
-		return sample{event: event, internal: internal, wall: wall}, ""
-	}
-
-	// Warm-up: the first user-prompt run pays the daemon spawn; the rest
-	// absorb binary page-in and FS cache.
-	for i := 0; i < warmupSamples; i++ {
-		if _, errOut := runHook("user-prompt", hookPayload(workDir, fmt.Sprintf("warm-up runbook subsystem %d", i))); errOut != "" {
-			return fmt.Errorf("warm-up: %s", errOut)
-		}
-	}
-
-	results := map[string][]sample{}
-	for i := 0; i < measuredRuns; i++ {
-		// A distinct corpus-matching prompt per run: the runner suppresses
-		// identical consecutive injections, which would measure the throttle,
-		// not recall.
-		events := []struct {
-			event   string
-			payload string
-		}{
-			{"user-prompt", hookPayload(workDir, fmt.Sprintf("runbook %d subsystem review cycle", i))},
-			{"pre-compact", hookPayload(workDir, "")},
-			{"session-end", hookPayload(workDir, "")},
-		}
-		for _, e := range events {
-			s, errOut := runHook(e.event, e.payload)
-			if errOut != "" {
-				return fmt.Errorf("%s", errOut)
-			}
-			results[e.event] = append(results[e.event], s)
-		}
-	}
+	defer cleanup()
 
 	fmt.Fprintln(stdout, "Embedder: keyword (no LLM, no network, no API key)")
-	fmt.Fprintf(stdout, "store: %d facts · %d warm-up + %d measured process runs per event\n\n",
-		seedFacts, warmupSamples, measuredRuns)
+	fmt.Fprintf(stdout, "policies: native, lexical; stores: %d and %d project facts, empty shared namespace\n", smallFacts, seedFacts)
+	fmt.Fprintf(stdout, "per cell: one daemon-cold prompt, %d warm-up + %d measured process runs per event\n", warmupSamples, measuredRuns)
+	fmt.Fprintln(stdout, "cold means no running daemon, not an empty OS disk cache; 12-sample p99 is the observed maximum")
+	fmt.Fprintln(stdout, "existing median gates and additional p99 checks are reported separately")
 
-	// The user-prompt run must actually inject — a benchmark that silently
-	// measures the throttle is worse than no benchmark.
-	if got, err := injectedBlockCount(storeDir); err != nil {
-		return fmt.Errorf("verify injections: %w", err)
-	} else if got == 0 {
-		return fmt.Errorf("no user-prompt run injected a memory block; the benchmark corpus and queries disagree")
-	}
-
-	fails := 0
-	// Deltas gate on the MEDIAN, not the p99: with twelve samples the p99 is
-	// the single worst run — a scheduler hiccup, a runner neighbour — and
-	// gating on it measures the runner's noise floor. The median is the
-	// robust central estimate; the p99 and max stay printed as reference.
-	preCompactMedian := percentile(internalDurations(results["pre-compact"]), 0.5)
-	fmt.Fprintf(stdout, "  baseline     internal median %7.1fms (pre-compact: spawn + connect + checkpoint)\n", ms(preCompactMedian))
-	for _, b := range []struct {
-		name        string
-		ss          []sample
-		deltaBudget time.Duration
-	}{
-		{"user-prompt", results["user-prompt"], recallDeltaBudget},
-		{"pre-compact", results["pre-compact"], 0},
-		{"session-end", results["session-end"], sessionEndDeltaBudget},
-	} {
-		median := percentile(internalDurations(b.ss), 0.5)
-		p99 := percentile(internalDurations(b.ss), 0.99)
-		max := maxOf(internalDurations(b.ss))
-		wallMax := maxOf(wallDurations(b.ss))
-		delta := median - preCompactMedian
-		note := ""
-		status := "ok"
-		if b.deltaBudget > 0 {
-			note = fmt.Sprintf(" · delta(med) %+7.1fms (budget ≤ %v)", ms(delta), b.deltaBudget)
-			if delta > b.deltaBudget {
-				status = "FAIL"
-				fails++
+	fails, p99Breaches := 0, 0
+	byPolicy := make(map[string]map[int]map[string][]sample)
+	var nativeScaling float64
+	for _, policy := range []string{"native", "lexical"} {
+		byPolicy[policy] = make(map[int]map[string][]sample)
+		for _, facts := range []int{smallFacts, seedFacts} {
+			storeDir := filepath.Join(root, fmt.Sprintf("%s-%d", policy, facts))
+			if err := seedStoreN(storeDir, facts); err != nil {
+				return fmt.Errorf("seed %s/%d: %w", policy, facts, err)
 			}
+			// Retain the original in-process native Recall scaling measurement.
+			// It owns the store before any daemon has been started.
+			if policy == "native" && facts == seedFacts {
+				nativeScaling, err = measureRecallScaling(storeDir)
+				if err != nil {
+					return fmt.Errorf("native Recall scaling: %w", err)
+				}
+			}
+			cold, results, err := measurePolicy(binary, workDir, storeDir, policy)
+			if err != nil {
+				return fmt.Errorf("%s/%d: %w", policy, facts, err)
+			}
+			byPolicy[policy][facts] = results
+			fmt.Fprintf(stdout, "\npolicy=%s facts=%d\n", policy, facts)
+			fmt.Fprintf(stdout, "  daemon-cold user-prompt internal %7.1fms · wall %7.1fms (one observation; no cold gate)\n", ms(cold.internal), ms(cold.wall))
+			cellFails, cellP99Breaches := reportPolicy(stdout, results)
+			fails += cellFails
+			p99Breaches += cellP99Breaches
 		}
-		fmt.Fprintf(stdout, "  %-12s internal med %7.1fms · p99 %7.1fms · max %7.1fms · wall max %7.1fms%s · %s\n",
-			b.name, ms(median), ms(p99), ms(max), ms(wallMax), note, status)
 	}
-
-	scalingStatus := "ok"
-	normalized := scalingRatio / (float64(seedFacts) / float64(smallFacts))
-	if normalized > recallScalingMaxNormalized {
-		scalingStatus = "FAIL"
+	fmt.Fprintln(stdout)
+	if !reportScaling(stdout, "native Recall in-process", nativeScaling) {
 		fails++
 	}
-	fmt.Fprintf(stdout, "  %-12s Recall(10k) / Recall(500) = %.1fx raw · %.2fx of linear (max %.1fx) · %s\n",
-		"scaling", scalingRatio, normalized, recallScalingMaxNormalized, scalingStatus)
-
-	if fails > 0 {
-		return fmt.Errorf("%d hook gate(s) breached (gates are machine-relative: deltas vs this run's pre-compact baseline, plus in-process scaling)", fails)
+	for _, policy := range []string{"native", "lexical"} {
+		smallMedian := percentile(internalDurations(byPolicy[policy][smallFacts]["user-prompt"]), 0.5)
+		bigMedian := percentile(internalDurations(byPolicy[policy][seedFacts]["user-prompt"]), 0.5)
+		if smallMedian <= 0 || bigMedian <= 0 {
+			return fmt.Errorf("%s hook scaling has a nonpositive duration", policy)
+		}
+		if !reportScaling(stdout, policy+" full hook (median)", float64(bigMedian)/float64(smallMedian)) {
+			fails++
+		}
 	}
-	fmt.Fprintf(stdout, "\nall hook gates hold\n")
+	for _, facts := range []int{smallFacts, seedFacts} {
+		native, lexical := byPolicy["native"][facts]["user-prompt"], byPolicy["lexical"][facts]["user-prompt"]
+		fmt.Fprintf(stdout, "lexical minus native, %d facts: internal median %+.1fms · wall median %+.1fms (whole policy path, not selection alone)\n",
+			facts, ms(percentile(internalDurations(lexical), 0.5)-percentile(internalDurations(native), 0.5)),
+			ms(percentile(wallDurations(lexical), 0.5)-percentile(wallDurations(native), 0.5)))
+	}
+	fmt.Fprintf(stdout, "additional p99 checks: %d breach(es); observational with %d samples per cell\n", p99Breaches, measuredRuns)
+	if fails > 0 {
+		return fmt.Errorf("%d hook gate(s) breached (median deltas and normalized scaling; p99 checks reported separately)", fails)
+	}
+	fmt.Fprintln(stdout, "all hook gates hold")
 	return nil
+}
+
+// measurePolicy owns one fresh daemon/store cell and stops it before returning.
+// Every prompt uses a distinct session id, so identical-block throttling cannot
+// turn a recall measurement into an empty-output measurement.
+func measurePolicy(binary, workDir, storeDir, policy string) (sample, map[string][]sample, error) {
+	defer stopDaemon(binary, storeDir)
+	runHook := func(event, prompt, session string) (sample, error) {
+		start := time.Now()
+		out, err := execHook(binary, workDir, storeDir, event, policy, hookPayload(workDir, prompt, event, session))
+		wall := time.Since(start)
+		if err != nil {
+			return sample{}, fmt.Errorf("%s: %w: %s", event, err, out)
+		}
+		entry, err := lastHookEntry(storeDir)
+		if err != nil {
+			return sample{}, fmt.Errorf("%s: hooks.log: %w", event, err)
+		}
+		if err := validateHookEntry(entry, event, policy, session, out); err != nil {
+			return sample{}, err
+		}
+		return sample{event: event, internal: time.Duration(*entry.Ms * float64(time.Millisecond)), wall: wall}, nil
+	}
+	cold, err := runHook("user-prompt", "runbook 96 subsystem review cycle", "bench-cold")
+	if err != nil {
+		return sample{}, nil, fmt.Errorf("daemon-cold: %w", err)
+	}
+	for i := 0; i < warmupSamples; i++ {
+		if _, err := runHook("user-prompt", fmt.Sprintf("runbook %d subsystem review cycle", i), fmt.Sprintf("bench-warm-%d", i)); err != nil {
+			return sample{}, nil, fmt.Errorf("warm-up: %w", err)
+		}
+	}
+	results := make(map[string][]sample)
+	for i := 0; i < measuredRuns; i++ {
+		// Alternate order to distribute drift between the recall and baseline.
+		events := []string{"user-prompt", "pre-compact"}
+		if i%2 != 0 {
+			events[0], events[1] = events[1], events[0]
+		}
+		for _, event := range events {
+			prompt := ""
+			if event == "user-prompt" {
+				prompt = fmt.Sprintf("runbook %d subsystem review cycle", i)
+			}
+			s, err := runHook(event, prompt, fmt.Sprintf("bench-measured-%d", i))
+			if err != nil {
+				return sample{}, nil, err
+			}
+			results[event] = append(results[event], s)
+		}
+	}
+	// Session-end starts detached consolidation. Measure it after prompt and
+	// baseline samples so that background work cannot distort their comparison.
+	for i := 0; i < measuredRuns; i++ {
+		s, err := runHook("session-end", "", fmt.Sprintf("bench-end-%d", i))
+		if err != nil {
+			return sample{}, nil, err
+		}
+		results["session-end"] = append(results["session-end"], s)
+	}
+	return cold, results, nil
+}
+
+func reportPolicy(stdout io.Writer, results map[string][]sample) (fails, p99Breaches int) {
+	baseline := internalDurations(results["pre-compact"])
+	baseMedian, baseP99 := percentile(baseline, 0.5), percentile(baseline, 0.99)
+	for _, event := range []string{"user-prompt", "pre-compact", "session-end"} {
+		ss := results[event]
+		internal, wall := internalDurations(ss), wallDurations(ss)
+		median, p99 := percentile(internal, 0.5), percentile(internal, 0.99)
+		note := ""
+		budget := time.Duration(0)
+		if event == "user-prompt" {
+			budget = recallDeltaBudget
+		} else if event == "session-end" {
+			budget = sessionEndDeltaBudget
+		}
+		if budget > 0 {
+			medianStatus, p99Status := "ok", "ok"
+			if median-baseMedian > budget {
+				medianStatus = "FAIL"
+				fails++
+			}
+			if p99-baseP99 > budget {
+				p99Status = "BREACH"
+				p99Breaches++
+			}
+			note = fmt.Sprintf(" · delta(med) %+.1fms ≤ %v %s · extra delta(p99) %+.1fms %s", ms(median-baseMedian), budget, medianStatus, ms(p99-baseP99), p99Status)
+		}
+		fmt.Fprintf(stdout, "  %-12s internal med %7.1fms · p99 %7.1fms · wall med %7.1fms · wall p99/max %7.1fms%s\n", event, ms(median), ms(p99), ms(percentile(wall, 0.5)), ms(maxOf(wall)), note)
+	}
+	return fails, p99Breaches
+}
+
+func reportScaling(stdout io.Writer, label string, ratio float64) bool {
+	normalized := ratio / (float64(seedFacts) / float64(smallFacts))
+	status := "ok"
+	if normalized > recallScalingMaxNormalized {
+		status = "FAIL"
+	}
+	fmt.Fprintf(stdout, "scaling %-27s 10k/500 = %.2fx raw · %.2fx of linear (max %.1fx) · %s\n", label, ratio, normalized, recallScalingMaxNormalized, status)
+	return status == "ok"
+}
+
+func stopDaemon(binary, storeDir string) {
+	cmd := exec.Command(binary, "--dir", storeDir, "daemon", "stop")
+	cmd.Env = benchmarkEnv(cmd.Environ())
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	_ = cmd.Run()
+	// The daemon releases its store and executable asynchronously after stop.
+	time.Sleep(500 * time.Millisecond)
 }
 
 // measureRecallScaling times in-process Recall over two store sizes and
@@ -260,12 +291,7 @@ func run(stdout io.Writer) error {
 // while the calling process is still the store's only owner.
 func measureRecallScaling(dir string) (float64, error) {
 	open := func(dataDir string, n int) (*graymatter.Memory, error) {
-		cfg := graymatter.DefaultConfig()
-		cfg.DataDir = dataDir
-		// Keep this latency gate local and reproducible, independent of ambient credentials.
-		cfg.EmbeddingMode = graymatter.EmbeddingKeyword
-		cfg.VectorReconcileInterval = 0
-		cfg.AsyncConsolidate = false
+		cfg := benchmarkConfig(dataDir)
 		mem, err := graymatter.NewWithConfig(cfg)
 		if err != nil {
 			return nil, err
@@ -336,92 +362,127 @@ func topicsFor(i int) string {
 
 // execHook runs the hook runner as one fresh process with the benchmark store
 // as its data dir, the way Claude Code invokes it (stdin JSON, output drained).
-func execHook(binary, workDir, storeDir, event, payload string) (string, error) {
-	cmd := exec.Command(binary, "--dir", storeDir, "hooks", "run", event)
+func execHook(binary, workDir, storeDir, event, policy, payload string) (string, error) {
+	args := []string{"--dir", storeDir, "hooks", "run", event}
+	if event == "user-prompt" {
+		args = append(args, "--packet-policy", policy)
+	}
+	cmd := exec.Command(binary, args...)
 	cmd.Dir = workDir
-	// Hook samples auto-start a daemon, and session-end spawns consolidation.
-	// Keep that entire measured path local, reproducible, and network-free.
-	cmd.Env = append(cmd.Environ(),
-		"ANTHROPIC_API_KEY=",
-		"OPENAI_API_KEY=",
-		"VOYAGE_API_KEY=",
-		"GRAYMATTER_OLLAMA_URL=disabled://hook-latency-benchmark",
-	)
+	cmd.Env = benchmarkEnv(cmd.Environ())
 	cmd.Stdin = strings.NewReader(payload)
 	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	return out.String(), err
 }
 
-// hookPayload is the stdin JSON Claude Code sends for each event.
-func hookPayload(workDir, prompt string) string {
-	if prompt != "" {
-		return fmt.Sprintf(`{"session_id":"bench","cwd":%q,"hook_event_name":"UserPromptSubmit","prompt":%q}`,
-			workDir, prompt)
-	}
-	return fmt.Sprintf(`{"session_id":"bench","cwd":%q,"hook_event_name":"SessionEnd"}`, workDir)
+// Disable provider auto-detection without introducing a product-only benchmark
+// flag. net/http rejects the unsupported Ollama URL scheme before a connection;
+// empty credentials disable the remaining providers and consolidation models.
+// Retrieval feature switches are pinned to the defaults used by this corpus.
+func benchmarkEnv(env []string) []string {
+	return append(env,
+		"ANTHROPIC_API_KEY=", "OPENAI_API_KEY=", "VOYAGE_API_KEY=",
+		"GRAYMATTER_OLLAMA_URL=disabled://hook-latency-benchmark",
+		"GRAYMATTER_STEM_KEYWORDS=1", "GRAYMATTER_CANDIDATE_RETRIEVAL=1",
+		"GRAYMATTER_USAGE_ALIAS=0", "GRAYMATTER_USAGE_ALIAS_AFFINITY=0",
+	)
 }
 
-// lastHookInternalMs reads the hook's own timing for the last logged event.
-// Every runner appends one JSON line with an "ms" field; internal < 0 means
-// the line carried none.
-func lastHookInternalMs(storeDir string) (time.Duration, error) {
+func hookPayload(workDir, prompt, event, session string) string {
+	eventName := map[string]string{"user-prompt": "UserPromptSubmit", "pre-compact": "PreCompact", "session-end": "SessionEnd"}[event]
+	payload, _ := json.Marshal(struct {
+		SessionID string `json:"session_id"`
+		CWD       string `json:"cwd"`
+		Event     string `json:"hook_event_name"`
+		Prompt    string `json:"prompt,omitempty"`
+	}{session, workDir, eventName, prompt})
+	return string(payload)
+}
+
+type hookEntry struct {
+	Event   string       `json:"event"`
+	Outcome string       `json:"outcome"`
+	Detail  string       `json:"detail"`
+	Session string       `json:"session"`
+	Ms      *float64     `json:"ms"`
+	Packet  *packetEntry `json:"-"`
+}
+
+type packetEntry struct {
+	Policy   string `json:"policy"`
+	Unit     string `json:"unit"`
+	MaxBytes int    `json:"max_bytes"`
+	Project  struct {
+		Effective  string `json:"effective"`
+		Candidates int    `json:"candidates"`
+		Selected   int    `json:"selected"`
+		Bytes      int    `json:"bytes"`
+		Reason     string `json:"reason"`
+	} `json:"project"`
+	Shared struct {
+		Effective string `json:"effective"`
+	} `json:"shared"`
+}
+
+func validateHookEntry(entry hookEntry, event, policy, session, output string) error {
+	if entry.Event != event || entry.Session != session || entry.Outcome != "ok" || entry.Ms == nil || *entry.Ms < 0 {
+		return fmt.Errorf("%s: invalid hook receipt (event=%q outcome=%q detail=%q)", event, entry.Event, entry.Outcome, entry.Detail)
+	}
+	if event != "user-prompt" {
+		return nil
+	}
+	marker := fmt.Sprintf("[GrayMatter hook recall ran for agent_id=%q.]", benchAgent)
+	if entry.Detail != "injected" || !strings.Contains(output, marker) {
+		return fmt.Errorf("user-prompt did not inject a memory block for %s", benchAgent)
+	}
+	if policy == "lexical" {
+		p := entry.Packet
+		if p == nil || p.Policy != policy || p.Unit != "utf8_bytes" || p.MaxBytes != 832 ||
+			p.Project.Effective != policy || p.Shared.Effective != policy ||
+			p.Project.Candidates <= 0 || p.Project.Candidates > 32 || p.Project.Selected <= 0 || p.Project.Selected > 3 ||
+			p.Project.Bytes <= 0 || p.Project.Bytes > p.MaxBytes || p.Project.Reason != "" {
+			return fmt.Errorf("lexical prompt did not produce a valid lexical packet receipt (fallback is not a lexical sample)")
+		}
+	} else if entry.Packet != nil {
+		return fmt.Errorf("native prompt unexpectedly produced a lexical packet receipt")
+	}
+	return nil
+}
+
+func lastHookEntry(storeDir string) (hookEntry, error) {
 	f, err := os.Open(filepath.Join(storeDir, "hooks.log"))
 	if err != nil {
-		return -1, err
+		return hookEntry{}, err
 	}
 	defer func() { _ = f.Close() }()
-
-	var last string
+	var entry, packetLog hookEntry
+	var packet *packetEntry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 4096), 64*1024)
 	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			last = line
+		if line := bytes.TrimSpace(sc.Bytes()); len(line) != 0 {
+			entry = hookEntry{}
+			if err := json.Unmarshal(line, &entry); err != nil {
+				return hookEntry{}, err
+			}
+			if entry.Outcome == "packet" {
+				packet = new(packetEntry)
+				if err := json.Unmarshal([]byte(entry.Detail), packet); err != nil {
+					return hookEntry{}, err
+				}
+				packetLog = entry
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return -1, err
+		return hookEntry{}, err
 	}
-	if last == "" {
-		return -1, fmt.Errorf("log is empty")
+	if packet != nil && packetLog.Session == entry.Session && packetLog.Event == entry.Event {
+		entry.Packet = packet
 	}
-	var entry struct {
-		Ms float64 `json:"ms"`
-	}
-	if err := json.Unmarshal([]byte(last), &entry); err != nil {
-		return -1, err
-	}
-	return time.Duration(entry.Ms * float64(time.Millisecond)), nil
-}
-
-// injectedBlockCount counts user-prompt runs that actually produced an
-// injected block, from the hook log.
-func injectedBlockCount(storeDir string) (int, error) {
-	f, err := os.Open(filepath.Join(storeDir, "hooks.log"))
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = f.Close() }()
-
-	count := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 4096), 64*1024)
-	for sc.Scan() {
-		var entry struct {
-			Event  string `json:"event"`
-			Detail string `json:"detail"`
-		}
-		if err := json.Unmarshal(sc.Bytes(), &entry); err != nil {
-			continue
-		}
-		if entry.Event == "user-prompt" && entry.Detail == "injected" {
-			count++
-		}
-	}
-	return count, sc.Err()
+	return entry, nil
 }
 
 // internalDurations extracts the hook-internal timing series.
@@ -512,16 +573,11 @@ func buildBinary(dir string) (string, func(), error) {
 	return bin, func() { _ = os.Remove(bin) }, nil
 }
 
-// seedStore plants seedFacts through the library (one process, no daemon),
+// seedStoreN plants n facts through the library (one process, no daemon),
 // with per-fact distinct texts so recall exercises real keyword scoring over
 // a realistic corpus.
-func seedStore(dir string) error {
-	cfg := graymatter.DefaultConfig()
-	cfg.DataDir = dir
-	// Keep corpus seeding local and reproducible, independent of ambient credentials.
-	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
-	cfg.VectorReconcileInterval = 0 // no background churn during measurement
-	cfg.AsyncConsolidate = false
+func seedStoreN(dir string, n int) error {
+	cfg := benchmarkConfig(dir)
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
 		return err
@@ -530,7 +586,7 @@ func seedStore(dir string) error {
 
 	ctx := context.Background()
 	topics := []string{"deploy", "database", "cache", "auth", "billing", "search", "queue", "logging", "metrics", "oncall"}
-	for i := 0; i < seedFacts; i++ {
+	for i := 0; i < n; i++ {
 		topic := topics[i%len(topics)]
 		text := fmt.Sprintf("Fact %d: the %s subsystem follows runbook %d and was last reviewed on cycle %d",
 			i, topic, i%97, i%13)
@@ -539,4 +595,21 @@ func seedStore(dir string) error {
 		}
 	}
 	return nil
+}
+
+// benchmarkConfig also clears the in-process model path: merely selecting the
+// keyword embedder would leave an ambient Anthropic consolidation key active.
+func benchmarkConfig(dir string) graymatter.Config {
+	cfg := graymatter.DefaultConfig()
+	cfg.DataDir = dir
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.ConsolidateLLM = ""
+	cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.VoyageAPIKey = "", "", ""
+	cfg.VectorReconcileInterval = 0
+	cfg.AsyncConsolidate = false
+	cfg.StemKeywords = true
+	cfg.CandidateRetrieval = true
+	cfg.UsageAliasLearning = false
+	cfg.UsageAliasAffinityMin = 0
+	return cfg
 }

@@ -66,7 +66,7 @@ jobs:
       - name: Test CLI module with coverage
         working-directory: cmd/graymatter
         shell: bash
-        run: go test -race -count=1 -timeout=300s -coverprofile=../../coverage-cli.out -covermode=atomic ./internal/harness/... ./internal/kg/... ./internal/server/... ./internal/plugin/... ./internal/mcp/... ./internal/session/... ./internal/daemon/... ./internal/httpauth/...
+        run: go test -race -count=1 -timeout=300s -coverprofile=../../coverage-cli.out -covermode=atomic ./internal/harness/... ./internal/kg/... ./internal/server/... ./internal/plugin/... ./internal/mcp/... ./internal/session/... ./internal/daemon/... ./internal/httpauth/... ./internal/hookpacket/...
 
       # The two coverage steps above enumerate packages explicitly, which left
       # the root package and the CLI entrypoint untested on every platform:
@@ -110,6 +110,12 @@ jobs:
       - name: Test benchmark packages
         shell: bash
         run: go test -race -count=1 -timeout=1200s ./benchmarks/token_count/... ./benchmarks/retrieval_quality/... ./benchmarks/revision_currency/...
+
+      # Receipt, environment and reporting contracts are deterministic. Keep
+      # them blocking without running wall-clock measurements in this matrix.
+      - name: Test hook benchmark validation
+        shell: bash
+        run: go test -race -short -count=1 ./benchmarks/hook_latency/
 
       - name: Coverage gate — core library (≥70%)
         shell: bash

@@ -47,6 +47,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cobra v1.8.1
 	go.etcd.io/bbolt v1.3.11
+	golang.org/x/text v0.27.0
 	golang.org/x/sys v0.34.0
 )
 
@@ -79,5 +80,4 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
 )

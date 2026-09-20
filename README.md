@@ -308,6 +308,11 @@ because absolute wall-clock numbers on shared CI runners measure the runner
 queue, not the code. Reference-hardware figure: p99 121 ms user-prompt on a
 10k-fact store, no LLM, localhost only by construction.
 
+For experimental lexical selection in prompt hooks, see
+[lexical hook packets](docs/lexical-hook-packets.md). This local, deterministic
+policy selects whole facts from a wider candidate pool without another model.
+The default remains native recall.
+
 ### Context block (opt-in)
 
 `graymatter context-sync` projects the highest-weight live facts into a managed

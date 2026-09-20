@@ -101,6 +101,7 @@ const (
 
 func hooksRunCmd() *cobra.Command {
 	var noCreate bool
+	var packetPolicy string
 	cmd := &cobra.Command{
 		Use:   "run <event>",
 		Short: "Execute a hook event handler (called by Claude Code, not by you)",
@@ -114,9 +115,10 @@ hooks must degrade silently, never break the session.`,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"session-start", "user-prompt", "pre-compact", "session-end"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHookEventWithNoCreate(args[0], noCreate)
+			return runHookEventWithPolicy(args[0], noCreate, packetPolicy)
 		},
 	}
+	cmd.Flags().StringVar(&packetPolicy, "packet-policy", "native", "prompt context selection: native or experimental lexical")
 	cmd.Flags().BoolVar(&noCreate, "no-create", false, "exit silently when the data directory has not been initialized")
 	cmd.Flags().Bool("graymatter-managed-hook", false, "mark a command managed by GrayMatter")
 	_ = cmd.Flags().MarkHidden("graymatter-managed-hook")
@@ -158,13 +160,21 @@ func runHookEvent(event string) error {
 }
 
 func runHookEventWithNoCreate(event string, noCreate bool) error {
+	return runHookEventWithPolicy(event, noCreate, "native")
+}
+
+func runHookEventWithPolicy(event string, noCreate bool, policy string) error {
 	start := timeNow()
 	payload := readHookPayload(os.Stdin)
 	if noCreate && !hookStoreInitialized(dataDir) {
 		return nil
 	}
 
-	out, err := dispatchHook(event, payload)
+	if !validHookPacketPolicy(policy) {
+		hookLog(payload, event, timeNow().Sub(start), "error", "invalid packet policy")
+		return nil
+	}
+	out, err := dispatchHookWithPolicy(event, payload, policy)
 	elapsed := timeNow().Sub(start)
 
 	if err != nil {
@@ -192,12 +202,16 @@ func runHookEventWithNoCreate(event string, noCreate bool) error {
 
 // dispatchHook runs the event's handler and returns the text to inject.
 func dispatchHook(event string, payload hookEventPayload) (string, error) {
+	return dispatchHookWithPolicy(event, payload, "native")
+}
+
+func dispatchHookWithPolicy(event string, payload hookEventPayload, policy string) (string, error) {
 	agent := deriveAgentID(hookCWD(payload))
 	switch event {
 	case "session-start":
 		return hookSessionStart(agent, payload)
 	case "user-prompt":
-		return hookUserPrompt(agent, payload)
+		return hookUserPromptWithPolicy(agent, payload, policy)
 	case "pre-compact":
 		return hookCheckpoint(agent, payload, "pre-compact")
 	case "session-end":
@@ -288,6 +302,10 @@ func hookSessionStart(agent string, payload hookEventPayload) (string, error) {
 // Consecutive turns with identical recall output in the same identified
 // session are suppressed via the state file: the context is already there.
 func hookUserPrompt(agent string, payload hookEventPayload) (string, error) {
+	return hookUserPromptWithPolicy(agent, payload, "native")
+}
+
+func hookUserPromptWithPolicy(agent string, payload hookEventPayload, policy string) (string, error) {
 	prompt := strings.TrimSpace(payload.Prompt)
 	if prompt == "" {
 		return "", nil
@@ -326,13 +344,27 @@ func hookUserPrompt(agent string, payload hookEventPayload) (string, error) {
 	}
 
 	start := timeNow()
+	selectionDeadline := time.Now().Add(time.Duration(userPromptHookTimeout-1) * time.Second)
 	store, err := openStore()
 	if err != nil {
 		return "", fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
-	block, degrade := hookRecallBlock(store, agent, prompt, hookUserPromptAgentTopK, hookUserPromptSharedTopK)
+	var block string
+	var degrade error
+	if policy == "lexical" {
+		// Connection time consumes the selection budget too. Store opening
+		// retains its existing transport limits; do not start more work late.
+		ctx, cancel := context.WithDeadline(context.Background(), selectionDeadline)
+		defer cancel()
+		var receipt hookPacketReceipt
+		block, receipt, degrade = hookRecallLexicalBlock(ctx, store, agent, prompt)
+		detail, _ := json.Marshal(receipt)
+		hookLog(payload, "user-prompt", timeNow().Sub(start), "packet", string(detail))
+	} else {
+		block, degrade = hookRecallBlock(store, agent, prompt, hookUserPromptAgentTopK, hookUserPromptSharedTopK)
+	}
 	if block == "" {
 		if degrade != nil {
 			return "", degrade

@@ -76,9 +76,10 @@ every rewrite keeps the previous file as <file>.bak.`,
 
 func hooksInstallCmd() *cobra.Command {
 	var (
-		scope  string
-		all    bool
-		global bool
+		scope        string
+		all          bool
+		global       bool
+		packetPolicy string
 	)
 	cmd := &cobra.Command{
 		Use:   "install [--scope project|global] [--all]",
@@ -91,6 +92,9 @@ were edited by hand, the rewrite reports the drift and proceeds, keeping
 the previous file as .bak.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("packet-policy") && !validHookPacketPolicy(packetPolicy) {
+				return fmt.Errorf("invalid packet policy %q (want native or lexical)", packetPolicy)
+			}
 			if all {
 				return fmt.Errorf("hooks install --all is not supported; install one scope explicitly to avoid duplicate hook execution")
 			}
@@ -108,7 +112,11 @@ the previous file as .bak.`,
 				if err != nil {
 					return err
 				}
-				res, err := upsertHookSettings(path, exe, true, sc)
+				var requested *string
+				if cmd.Flags().Changed("packet-policy") {
+					requested = &packetPolicy
+				}
+				res, err := upsertHookSettingsPolicy(path, exe, true, sc, requested)
 				if err != nil {
 					return err
 				}
@@ -117,6 +125,7 @@ the previous file as .bak.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&packetPolicy, "packet-policy", "", "prompt context selection: native or experimental lexical (preserves existing choice)")
 	cmd.Flags().StringVar(&scope, "scope", "project", "where to write: project (.claude/settings.json) or global (~/.claude/settings.json)")
 	cmd.Flags().BoolVar(&all, "all", false, "unsupported: install one scope at a time to avoid duplicate hook execution")
 	cmd.Flags().BoolVar(&global, "global", false, "alias of --scope global")
@@ -255,7 +264,14 @@ func upsertHookSettings(path, exe string, install bool, scopes ...hookScope) (ho
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
+	return upsertHookSettingsPolicy(path, exe, install, scope, nil)
+}
+
+func upsertHookSettingsPolicy(path, exe string, install bool, scope hookScope, requested *string) (hookSettingsResult, error) {
 	res := hookSettingsResult{Path: path}
+	if requested != nil && !validHookPacketPolicy(*requested) {
+		return res, fmt.Errorf("invalid packet policy (want native or lexical)")
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -291,11 +307,22 @@ func upsertHookSettings(path, exe string, install bool, scopes ...hookScope) (ho
 		hooks = map[string]any{}
 	}
 
+	policy := ""
+	if install {
+		if requested != nil {
+			policy = *requested
+		} else {
+			policy, err = installedHookPacketPolicy(hooks[hooksEventUserPrompt], exe)
+			if err != nil {
+				return res, err
+			}
+		}
+	}
 	changed := false
 	drifted := false
 	unmanaged := []string{}
 	for _, event := range hookEventNames() {
-		want := hookGroupsFor(exe, event, scope)
+		want := hookGroupsForPolicy(exe, event, scope, policy)
 		if !install {
 			want = nil
 		}
@@ -509,8 +536,15 @@ func hookGroupsFor(exe, event string, scopes ...hookScope) []any {
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
+	return hookGroupsForPolicy(exe, event, scope, "")
+}
+
+func hookGroupsForPolicy(exe, event string, scope hookScope, policy string) []any {
 	group := func(matcher string, timeout int) map[string]any {
 		args := []string{"hooks", "run", hookRunArg(event), hooksCommandMarker}
+		if event == hooksEventUserPrompt && policy != "" {
+			args = append(args, "--packet-policy", policy)
+		}
 		if scope == scopeGlobal {
 			args = append(args, hooksNoCreateArg)
 		}
@@ -670,6 +704,7 @@ func runHooksDoctorChecks(path, exeAbs string, scope hookScope) []hookCheck {
 	}
 
 	hooks, _ := root["hooks"].(map[string]any)
+	checks = append(checks, hookPacketPolicyCheck(hooks[hooksEventUserPrompt], exeAbs))
 	missing := []string{}
 	exePath := ""
 	for _, event := range hookEventNames() {
@@ -799,9 +834,13 @@ func hookSettingsDrift(path, exeAbs string, scopes ...hookScope) (bool, error) {
 		return false, err
 	}
 	hooks, _ := root["hooks"].(map[string]any)
+	policy, err := installedHookPacketPolicy(hooks[hooksEventUserPrompt], exeAbs)
+	if err != nil {
+		return true, err
+	}
 	drift := false
 	for _, event := range hookEventNames() {
-		_, _, d, managed := rewriteHookEvent(hooks[event], hookGroupsFor(exeAbs, event, scope), true, exeAbs)
+		_, _, d, managed := rewriteHookEvent(hooks[event], hookGroupsForPolicy(exeAbs, event, scope, policy), true, exeAbs)
 		drift = drift || (managed && d)
 	}
 	return drift, nil
