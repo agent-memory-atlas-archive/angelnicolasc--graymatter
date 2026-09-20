@@ -6,6 +6,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`checkpoint_resume` can report a missing checkpoint as a successful, machine-readable result.** A new optional `on_missing` parameter (`"error"` — the default — or `"empty"`) lets callers ask for `{"found": false, "agent_id"}` with `isError` unset instead of the historical not-found tool error, so a session-start check can tell "nothing saved yet" from a broken store without parsing prose. The output schema declares both result shapes under `oneOf`; storage and daemon failures stay prose-only errors in both modes. See [ADR-015](docs/decisions/015-checkpoint-resume-empty-result.md).
+
+### Notes
+
+- **A future `checkpoint_resume` default of `on_missing: "empty"` is conditional on real-client validation.** v0.20.0 keeps `"error"` as the default. A change in v0.21.0 may proceed only after a successful OpenChamber/OpenCode smoke and prior-minor notice in the released changelog and `docs/api-stability.md`. If the client rejects the union schema, apply and validate the documented fallback before publishing v0.20.0, keep the default as `"error"`, and defer the default change. Explicit `"error"` remains accepted throughout v0.x.
+
+---
+
 ## [0.19.1] - 2026-09-07
 
 ### Fixed
