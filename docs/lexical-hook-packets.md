@@ -8,6 +8,7 @@ Go, with no additional model, process, or download. The default is `native`.
 
 ```sh
 graymatter hooks install --packet-policy lexical
+graymatter doctor
 graymatter hooks doctor
 
 # Return to the existing recall policy.
@@ -16,8 +17,11 @@ graymatter hooks install --packet-policy native
 
 Use the same `--scope project|global` as your installed hooks. Reinstalling
 without `--packet-policy` preserves an explicit choice. A fresh installation
-without the flag follows the product default. Doctor reports the policy and
-whether it is explicit or inherited. Uninstall works as before; changing the
+without the flag follows the product default. Both diagnostic commands report
+the policy configured in the project and/or global settings files they inspect,
+including whether it is explicit or inherited. This does not determine the
+host's effective configuration after managed or other settings are combined.
+Uninstall works as before; changing the
 policy does not migrate or restore memory data.
 
 The flag also works on `graymatter hooks run user-prompt`. Other events and
@@ -75,3 +79,7 @@ The benchmark in `benchmarks/hook_latency` measures both policies at 500 and
 10,000 facts through the real CLI and daemon. Machine-relative gates and
 absolute timings are reported separately. Local results do not certify
 other hardware or production workloads.
+
+A future default change is evaluated separately, using conflict coverage and
+everyday use. Until then, `native` remains the default. An explicit choice of
+`native` or `lexical` is preserved when hooks are reinstalled.

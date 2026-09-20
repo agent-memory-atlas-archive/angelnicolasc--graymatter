@@ -47,6 +47,10 @@ func doctorCmd() *cobra.Command {
   3. store opens; fact/agent counts; lock state (single-writer detection)
   4. MCP server wired into at least one client config
   5. CLAUDE.md / AGENTS.md tell the model to use the memory tools
+  6. configured prompt-packet policies in project and global settings.json
+
+Packet-policy checks describe those files, not the host's effective settings
+precedence. Missing hooks are informational; no settings are changed.
 
 With --audit, skips the setup checks and instead audits the instruction
 documents themselves: approx token cost per prompt (tokenizer declared in
@@ -103,6 +107,7 @@ even when the daemon is down (read-only probe of gray.db).`,
 				checkKG(dataDir),
 				checkContextSync("."),
 			}
+			checks = append(checks, checkHookPacketPolicies()...)
 
 			if jsonOut {
 				ok := true
@@ -161,6 +166,24 @@ even when the daemon is down (read-only probe of gray.db).`,
 	cmd.Flags().BoolVar(&health, "health", false, "audit store health: supersede loops, dumping bursts, near-prune criticals, duplicates")
 	cmd.Flags().BoolVar(&embeddings, "embeddings", false, "audit the vector channel as the store observed it: coverage, degraded writes, retry backlog")
 	return cmd
+}
+
+func checkHookPacketPolicies() []checkResult {
+	exe, err := resolveOwnBinary()
+	if err != nil {
+		return []checkResult{{Name: "packet policy", Status: "fail", Detail: "cannot resolve this binary: " + err.Error()}}
+	}
+	checks := make([]checkResult, 0, 2)
+	for _, scope := range []hookScope{scopeProject, scopeGlobal} {
+		path, err := claudeSettingsPath(scope)
+		if err != nil {
+			checks = append(checks, checkResult{Name: "packet policy", Status: "fail", Detail: string(scope) + " settings: " + err.Error()})
+			continue
+		}
+		check := readHookPacketConfigurationCheck(path, exe, scope)
+		checks = append(checks, checkResult(check))
+	}
+	return checks
 }
 
 func checkGlobalHooks() checkResult {

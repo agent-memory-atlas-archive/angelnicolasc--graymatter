@@ -10,9 +10,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
+- **`graymatter doctor` shows prompt-packet policies configured in project and global settings.** The read-only checks identify explicit choices, inherited defaults, and invalid configurations, and show how to enable experimental lexical selection.
+
+- **Optional lexical selection puts more useful memory in the initial prompt context.** `graymatter hooks install --packet-policy lexical` selects up to three whole facts from 32 candidates within 832 UTF-8 payload bytes per namespace. It runs locally in Go without an additional model or download; `native` remains the default and is available as an explicit return path. In an exploratory keyword-only pilot of 24 paired tasks, follow-up memory searches fell from 43 to 23, with similar functional results in that sample. The updated hook benchmark measured warm process medians of 51.1 ms native and 56.3 ms lexical at 10,000 facts on the local test machine, with 12 samples per policy. These results are scoped measurements, not general quality or latency guarantees. See [lexical hook selection](docs/lexical-hook-packets.md).
+
 - **`checkpoint_resume` can report a missing checkpoint as a successful, machine-readable result.** A new optional `on_missing` parameter (`"error"` — the default — or `"empty"`) lets callers ask for `{"found": false, "agent_id"}` with `isError` unset instead of the historical not-found tool error, so a session-start check can tell "nothing saved yet" from a broken store without parsing prose. The output schema declares both result shapes under `oneOf`; storage and daemon failures stay prose-only errors in both modes. See [ADR-015](docs/decisions/015-checkpoint-resume-empty-result.md).
 
+### Fixed
+
+- **The CLI now requires `golang.org/x/text v0.39.0`, which fixes [GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970).** This dependency update applies independently of the selected hook policy; lexical selection also rejects malformed UTF-8 before normalization. The module graph advances `golang.org/x/sync` to v0.21.0 without raising the CLI's minimum Go version.
+
 ### Notes
+
+- **Lexical hook selection remains experimental while conflict coverage and everyday use are evaluated for a future default change.** It can omit a supporting fact or one side of a disagreement, and recalling the larger pool updates access metadata even for candidates omitted from the packet. Existing explicit policy choices are preserved.
 
 - **A future `checkpoint_resume` default of `on_missing: "empty"` is conditional on real-client validation.** v0.20.0 keeps `"error"` as the default. A change in v0.21.0 may proceed only after a successful OpenChamber/OpenCode smoke and prior-minor notice in the released changelog and `docs/api-stability.md`. If the client rejects the union schema, apply and validate the documented fallback before publishing v0.20.0, keep the default as `"error"`, and defer the default change. Explicit `"error"` remains accepted throughout v0.x.
 

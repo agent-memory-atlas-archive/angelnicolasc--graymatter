@@ -704,7 +704,7 @@ func runHooksDoctorChecks(path, exeAbs string, scope hookScope) []hookCheck {
 	}
 
 	hooks, _ := root["hooks"].(map[string]any)
-	checks = append(checks, hookPacketPolicyCheck(hooks[hooksEventUserPrompt], exeAbs))
+	checks = append(checks, hookPacketConfigurationCheck(root, path, exeAbs, scope))
 	missing := []string{}
 	exePath := ""
 	for _, event := range hookEventNames() {
