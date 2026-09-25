@@ -656,6 +656,7 @@ func TestInitI10ConcurrentExistingFileGuardAcrossRoots(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	initSetStableReplacementMetadataForTest(t, path)
 	first, err := planInitFile(path, 0o600, func([]byte, bool) ([]byte, string, error) {
 		return []byte(`{"owner":"first"}`), "updated", nil
 	})
@@ -710,13 +711,13 @@ func TestInitI10ConcurrentExistingFileGuardAcrossRoots(t *testing.T) {
 	select {
 	case <-entered:
 	case <-firstDone:
-		t.Fatalf("first init failed before file guard: %+v (%T)", firstOut, firstOut.err)
+		t.Fatalf("first init failed before file guard: %+v; err=%v (%T)", firstOut, firstOut.err, firstOut.err)
 	case <-time.After(20 * time.Second):
 		t.Fatal("first init did not acquire the file guard")
 	}
 	blocked := second.apply()
 	if blocked.status != "failed" || blocked.err == nil || !strings.Contains(blocked.err.Error(), "initialization_busy") {
-		t.Fatalf("second init bypassed held guard: %+v", blocked)
+		t.Fatalf("second init bypassed held guard: %+v; err=%v", blocked, blocked.err)
 	}
 	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, before) {
 		t.Fatalf("target changed while first init was held: %s err=%v", data, err)
@@ -725,14 +726,14 @@ func TestInitI10ConcurrentExistingFileGuardAcrossRoots(t *testing.T) {
 	select {
 	case <-firstDone:
 		if firstOut.status != "updated" || firstOut.err != nil {
-			t.Fatalf("first init failed: %+v", firstOut)
+			t.Fatalf("first init failed: %+v; err=%v", firstOut, firstOut.err)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("first init did not complete after guard release")
 	}
 	stale := second.apply()
 	if stale.status != "failed" || stale.err == nil || !strings.Contains(stale.err.Error(), "publication_conflict") {
-		t.Fatalf("stale second plan overwrote publication: %+v", stale)
+		t.Fatalf("stale second plan overwrote publication: %+v; err=%v", stale, stale.err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != `{"owner":"first"}` {
 		t.Fatalf("target changed after conflict: %s err=%v", data, err)
@@ -745,6 +746,7 @@ func TestInitI10GuardReleaseErrorKeepsPublicationReceipt(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"owner":"before"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	initSetStableReplacementMetadataForTest(t, path)
 	plan, err := planInitFile(path, 0o600, func([]byte, bool) ([]byte, string, error) {
 		return []byte(`{"owner":"after"}`), "updated", nil
 	})
@@ -766,7 +768,7 @@ func TestInitI10GuardReleaseErrorKeepsPublicationReceipt(t *testing.T) {
 	defer func() { initAcquireFileGuard = previous }()
 	out := plan.apply()
 	if out.status != "applied_cleanup_failed" || !out.changed || !out.uncertain || out.err == nil {
-		t.Fatalf("lost confirmed publication after guard release error: %+v", out)
+		t.Fatalf("lost confirmed publication after guard release error: %+v; err=%v", out, out.err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != `{"owner":"after"}` {
 		t.Fatalf("confirmed publication missing: %s err=%v", data, err)
@@ -958,6 +960,7 @@ func TestInitI09RenameErrorReceiptsAllPlatforms(t *testing.T) {
 			if err := os.WriteFile(path, before, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			initSetStableReplacementMetadataForTest(t, path)
 			plan, err := planInitFile(path, 0o600, func(data []byte, exists bool) ([]byte, string, error) {
 				return planJSONMCP(data, exists, "mcpServers", mcpEntry, false, false)
 			})
@@ -981,7 +984,7 @@ func TestInitI09RenameErrorReceiptsAllPlatforms(t *testing.T) {
 				want = "applied_cleanup_failed"
 			}
 			if out.status != want || out.err == nil || out.uncertain {
-				t.Fatalf("rename receipt: %+v", out)
+				t.Fatalf("rename receipt: %+v; err=%v", out, out.err)
 			}
 			data, err := os.ReadFile(path)
 			if err != nil || (bytes.Equal(data, before) == publishFirst) {
