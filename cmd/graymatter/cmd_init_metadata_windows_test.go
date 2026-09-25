@@ -13,11 +13,27 @@ import (
 
 func initAllowAuditSACLForTest(t *testing.T) {
 	t.Helper()
+	// These fixtures exercise DACL, file identity, and publication behavior
+	// under ordinary Windows tokens. Audit and mandatory-label reads can be
+	// denied by the runner; supply stable descriptors for those two fields
+	// only. Production still requires both real descriptors and rejects a
+	// replacement when either cannot be inspected.
+	audit, err := windows.SecurityDescriptorFromString("S:(AU;SA;FA;;;WD)")
+	if err != nil || audit == nil || !audit.IsValid() {
+		t.Fatalf("synthetic audit descriptor: %v", err)
+	}
+	label, err := windows.SecurityDescriptorFromString("S:(ML;;NW;;;ME)")
+	if err != nil || label == nil || !label.IsValid() {
+		t.Fatalf("synthetic label descriptor: %v", err)
+	}
 	previous := initReadWindowsSecurityInfo
 	initReadWindowsSecurityInfo = func(handle windows.Handle, objectType windows.SE_OBJECT_TYPE,
 		kind windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error) {
-		if kind == windows.SACL_SECURITY_INFORMATION {
-			return previous(handle, objectType, windows.LABEL_SECURITY_INFORMATION)
+		switch kind {
+		case windows.SACL_SECURITY_INFORMATION:
+			return audit, nil
+		case windows.LABEL_SECURITY_INFORMATION:
+			return label, nil
 		}
 		return previous(handle, objectType, kind)
 	}
