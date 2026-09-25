@@ -33,9 +33,9 @@ import (
 //   - Output: exit 0 and plain text on stdout → the text is added to Claude's
 //     context (SessionStart and UserPromptSubmit). For the other two events
 //     stdout is not injected, so the runners print nothing.
-//   - Every error path: exit 0, empty stdout, one JSON line appended to
-//     <dataDir>/hooks.log. A memory system that breaks must never break the
-//     session it serves — degrade silently, leave a receipt in the log.
+//   - Runtime handler errors: exit 0, empty stdout, with a receipt in the
+//     selected store's hooks.log. Invalid routing and no-create rejections
+//     stop before any store-side write.
 
 const (
 	// hookLatencyBudget is the per-turn budget the user-prompt hook must meet
@@ -110,16 +110,18 @@ and writes injectable context to stdout.
 
 Events: session-start, user-prompt, pre-compact, session-end.
 
-Every failure exits 0 with empty stdout and logs to <dataDir>/hooks.log —
-hooks must degrade silently, never break the session.`,
+Failures exit 0 with empty stdout. Handler errors log to the selected store;
+invalid routing and --no-create rejections stop before opening or logging to
+a store.`,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"session-start", "user-prompt", "pre-compact", "session-end"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHookEventWithPolicy(args[0], noCreate, packetPolicy)
+			dirFlag := cmd.Flag("dir")
+			return runHookEventWithPolicySelected(args[0], noCreate, packetPolicy, dirFlag != nil && dirFlag.Changed)
 		},
 	}
 	cmd.Flags().StringVar(&packetPolicy, "packet-policy", "native", "prompt context selection: native or experimental lexical")
-	cmd.Flags().BoolVar(&noCreate, "no-create", false, "exit silently when the data directory has not been initialized")
+	cmd.Flags().BoolVar(&noCreate, "no-create", false, "skip without opening or logging when the selected store is unprepared")
 	cmd.Flags().Bool("graymatter-managed-hook", false, "mark a command managed by GrayMatter")
 	_ = cmd.Flags().MarkHidden("graymatter-managed-hook")
 	return cmd
@@ -136,21 +138,65 @@ type hookEventPayload struct {
 	Prompt         string `json:"prompt"`
 }
 
-// readHookPayload reads and parses the event JSON from stdin. An empty or
-// unparsable payload is an empty struct, never an error — runners still work
-// (with cwd from the process) when Claude Code sends nothing. A UTF-8 BOM is
-// stripped before parsing: nothing sane sends one, but a payload produced
-// through a Windows text pipeline may carry it, and refusing to parse over
-// three bytes would silently disable every hook.
+// readHookPayload is the compatibility reader for callers that only need an
+// empty value on malformed input. The command uses the checked reader below:
+// malformed project signals must never fall back to the process directory.
 func readHookPayload(r io.Reader) hookEventPayload {
+	p, _ := readHookPayloadChecked(r)
+	return p
+}
+
+func readHookPayloadChecked(r io.Reader) (hookEventPayload, error) {
 	var p hookEventPayload
-	data, err := io.ReadAll(io.LimitReader(r, hookStdinMax))
-	if err != nil || len(data) == 0 {
-		return p
+	data, err := io.ReadAll(io.LimitReader(r, hookStdinMax+1))
+	if err != nil {
+		return p, err
+	}
+	if len(data) > hookStdinMax {
+		return p, fmt.Errorf("hook payload exceeds %d bytes", hookStdinMax)
+	}
+	if len(data) == 0 {
+		return p, nil
 	}
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
-	_ = json.Unmarshal(data, &p) // unparsable JSON leaves the zero value
-	return p
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return p, fmt.Errorf("hook payload must be a JSON object")
+	}
+	var cwdSeen bool
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return p, fmt.Errorf("hook payload must be a JSON object")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return p, fmt.Errorf("hook payload must be a JSON object")
+		}
+		name, ok := key.(string)
+		if !ok || !strings.EqualFold(name, "cwd") {
+			continue
+		}
+		if name != "cwd" || cwdSeen {
+			return p, fmt.Errorf("hook payload cwd must be an unambiguous lowercase field")
+		}
+		cwdSeen = true
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return p, fmt.Errorf("hook payload cwd must be a string")
+		}
+		var cwd string
+		if err := json.Unmarshal(value, &cwd); err != nil {
+			return p, fmt.Errorf("hook payload cwd must be a string")
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return p, fmt.Errorf("hook payload must be a JSON object")
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return hookEventPayload{}, fmt.Errorf("hook payload has invalid field types")
+	}
+	return p, nil
 }
 
 // runHookEvent dispatches one event, enforcing the exit-0/silent-failure
@@ -164,21 +210,43 @@ func runHookEventWithNoCreate(event string, noCreate bool) error {
 }
 
 func runHookEventWithPolicy(event string, noCreate bool, policy string) error {
+	// Direct callers use the package-level directory as an explicit selection.
+	// The Cobra entrypoint passes the flag's actual Changed bit instead.
+	return runHookEventWithPolicySelected(event, noCreate, policy, true)
+}
+
+func runHookEventWithPolicySelected(event string, noCreate bool, policy string, dirChanged bool) error {
 	start := timeNow()
-	payload := readHookPayload(os.Stdin)
-	if noCreate && !hookStoreInitialized(dataDir) {
+	payload, payloadErr := readHookPayloadChecked(os.Stdin)
+	if payloadErr != nil {
+		fmt.Fprintln(os.Stderr, "graymatter hook skipped: invalid event payload")
+		return nil // fail soft without guessing a project or writing a store
+	}
+	cwd, cwdErr := os.Getwd()
+	claudeRoot, claudeRootPresent := os.LookupEnv("CLAUDE_PROJECT_DIR")
+	route, routeErr := resolveRuntimeContext(runtimeContextInput{
+		configuredDir: dataDir, dirChanged: dirChanged,
+		capturedCWD: cwd, cwdErr: cwdErr,
+		claudeProjectDir: claudeRoot, claudeProjectDirPresent: claudeRootPresent,
+		payloadCWD: payload.CWD, transport: runtimeHook,
+	})
+	if routeErr != nil {
+		fmt.Fprintln(os.Stderr, "graymatter hook skipped: invalid or conflicting project route")
+		return nil // fail soft without writing to a possibly wrong store
+	}
+	if noCreate && !hookStoreInitialized(route.storeDir) {
 		return nil
 	}
 
 	if !validHookPacketPolicy(policy) {
-		hookLog(payload, event, timeNow().Sub(start), "error", "invalid packet policy")
+		hookLogAt(route, payload, event, timeNow().Sub(start), "error", "invalid packet policy")
 		return nil
 	}
-	out, err := dispatchHookWithPolicy(event, payload, policy)
+	out, err := dispatchHookWithPolicyAt(route, event, payload, policy)
 	elapsed := timeNow().Sub(start)
 
 	if err != nil {
-		hookLog(payload, event, elapsed, "error", err.Error())
+		hookLogAt(route, payload, event, elapsed, "error", err.Error())
 		return nil // exit 0, stdout untouched
 	}
 	if out != "" {
@@ -196,7 +264,7 @@ func runHookEventWithPolicy(event string, noCreate bool, policy string) error {
 	case "pre-compact", "session-end":
 		detail = "checkpointed"
 	}
-	hookLog(payload, event, elapsed, "ok", detail)
+	hookLogAt(route, payload, event, elapsed, "ok", detail)
 	return nil
 }
 
@@ -206,16 +274,20 @@ func dispatchHook(event string, payload hookEventPayload) (string, error) {
 }
 
 func dispatchHookWithPolicy(event string, payload hookEventPayload, policy string) (string, error) {
-	agent := deriveAgentID(hookCWD(payload))
+	route := runtimeContext{storeDir: dataDir, agentID: deriveAgentID(hookCWD(payload))}
+	return dispatchHookWithPolicyAt(route, event, payload, policy)
+}
+
+func dispatchHookWithPolicyAt(route runtimeContext, event string, payload hookEventPayload, policy string) (string, error) {
 	switch event {
 	case "session-start":
-		return hookSessionStart(agent, payload)
+		return hookSessionStartAt(route, payload)
 	case "user-prompt":
-		return hookUserPromptWithPolicy(agent, payload, policy)
+		return hookUserPromptWithPolicyAt(route, payload, policy)
 	case "pre-compact":
-		return hookCheckpoint(agent, payload, "pre-compact")
+		return hookCheckpointAt(route, payload, "pre-compact")
 	case "session-end":
-		return hookSessionEnd(agent, payload)
+		return hookSessionEndAt(route, payload)
 	default:
 		return "", fmt.Errorf("unknown hook event %q (want session-start, user-prompt, pre-compact, session-end)", event)
 	}
@@ -277,14 +349,18 @@ func deriveAgentID(dir string) string {
 // ranked signal (there are no query terms to match), which is exactly "start
 // where the last session ended": the freshest live facts, deterministic order.
 func hookSessionStart(agent string, payload hookEventPayload) (string, error) {
+	return hookSessionStartAt(runtimeContext{storeDir: dataDir, agentID: agent}, payload)
+}
+
+func hookSessionStartAt(route runtimeContext, payload hookEventPayload) (string, error) {
 	start := timeNow()
-	store, err := openStore()
+	store, err := openStoreAt(route.storeDir)
 	if err != nil {
 		return "", fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
-	block, degrade := hookRecallBlock(store, agent, "", hookSessionStartAgentTopK, hookSessionStartSharedTopK)
+	block, degrade := hookRecallBlock(store, route.agentID, "", hookSessionStartAgentTopK, hookSessionStartSharedTopK)
 	if block == "" {
 		if degrade != nil {
 			return "", degrade
@@ -292,7 +368,7 @@ func hookSessionStart(agent string, payload hookEventPayload) (string, error) {
 		return "", nil // never noise: an empty memory injects nothing
 	}
 	if degrade != nil {
-		hookLog(payload, "session-start", timeNow().Sub(start), "error", degrade.Error())
+		hookLogAt(route, payload, "session-start", timeNow().Sub(start), "error", degrade.Error())
 	}
 	return block, nil
 }
@@ -306,6 +382,10 @@ func hookUserPrompt(agent string, payload hookEventPayload) (string, error) {
 }
 
 func hookUserPromptWithPolicy(agent string, payload hookEventPayload, policy string) (string, error) {
+	return hookUserPromptWithPolicyAt(runtimeContext{storeDir: dataDir, agentID: agent}, payload, policy)
+}
+
+func hookUserPromptWithPolicyAt(route runtimeContext, payload hookEventPayload, policy string) (string, error) {
 	prompt := strings.TrimSpace(payload.Prompt)
 	if prompt == "" {
 		return "", nil
@@ -316,7 +396,7 @@ func hookUserPromptWithPolicy(agent string, payload hookEventPayload, policy str
 		if rest == "" {
 			return "", fmt.Errorf("remember shared: with no text")
 		}
-		store, err := openStore()
+		store, err := openStoreAt(route.storeDir)
 		if err != nil {
 			return "", fmt.Errorf("open store: %w", err)
 		}
@@ -332,20 +412,20 @@ func hookUserPromptWithPolicy(agent string, payload hookEventPayload, policy str
 		if rest == "" {
 			return "", fmt.Errorf("remember: with no text")
 		}
-		store, err := openStore()
+		store, err := openStoreAt(route.storeDir)
 		if err != nil {
 			return "", fmt.Errorf("open store: %w", err)
 		}
 		defer func() { _ = store.Close() }()
-		if err := store.Remember(context.Background(), agent, rest); err != nil {
+		if err := store.Remember(context.Background(), route.agentID, rest); err != nil {
 			return "", fmt.Errorf("remember: %w", err)
 		}
-		return fmt.Sprintf("Saved to memory (%s): %s", agent, rest), nil
+		return fmt.Sprintf("Saved to memory (%s): %s", route.agentID, rest), nil
 	}
 
 	start := timeNow()
 	selectionDeadline := time.Now().Add(time.Duration(userPromptHookTimeout-1) * time.Second)
-	store, err := openStore()
+	store, err := openStoreAt(route.storeDir)
 	if err != nil {
 		return "", fmt.Errorf("open store: %w", err)
 	}
@@ -359,11 +439,11 @@ func hookUserPromptWithPolicy(agent string, payload hookEventPayload, policy str
 		ctx, cancel := context.WithDeadline(context.Background(), selectionDeadline)
 		defer cancel()
 		var receipt hookPacketReceipt
-		block, receipt, degrade = hookRecallLexicalBlock(ctx, store, agent, prompt)
+		block, receipt, degrade = hookRecallLexicalBlock(ctx, store, route.agentID, prompt)
 		detail, _ := json.Marshal(receipt)
-		hookLog(payload, "user-prompt", timeNow().Sub(start), "packet", string(detail))
+		hookLogAt(route, payload, "user-prompt", timeNow().Sub(start), "packet", string(detail))
 	} else {
-		block, degrade = hookRecallBlock(store, agent, prompt, hookUserPromptAgentTopK, hookUserPromptSharedTopK)
+		block, degrade = hookRecallBlock(store, route.agentID, prompt, hookUserPromptAgentTopK, hookUserPromptSharedTopK)
 	}
 	if block == "" {
 		if degrade != nil {
@@ -372,12 +452,12 @@ func hookUserPromptWithPolicy(agent string, payload hookEventPayload, policy str
 		return "", nil
 	}
 	if degrade != nil {
-		hookLog(payload, "user-prompt", timeNow().Sub(start), "error", degrade.Error())
+		hookLogAt(route, payload, "user-prompt", timeNow().Sub(start), "error", degrade.Error())
 	}
-	if hookStateSeenBlock(agent, payload.SessionID, block) {
+	if hookStateSeenBlockAt(route.storeDir, route.agentID, payload.SessionID, block) {
 		return "", nil // identical context is already present in this session
 	}
-	hookStateRecordBlock(agent, payload.SessionID, block)
+	hookStateRecordBlockAt(route.storeDir, route.agentID, payload.SessionID, block)
 	return block, nil
 }
 
@@ -431,13 +511,17 @@ var hookRecallBlock = func(store cliStore, agent, query string, agentTopK, share
 // hookCheckpoint is the pre-compact runner: one deterministic checkpoint, no
 // LLM, well inside the 200 ms budget.
 func hookCheckpoint(agent string, payload hookEventPayload, event string) (string, error) {
-	store, err := openStore()
+	return hookCheckpointAt(runtimeContext{storeDir: dataDir, agentID: agent}, payload, event)
+}
+
+func hookCheckpointAt(route runtimeContext, payload hookEventPayload, event string) (string, error) {
+	store, err := openStoreAt(route.storeDir)
 	if err != nil {
 		return "", fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
-	_, err = store.CheckpointSave(sessionCheckpointFor(agent, payload, event))
+	_, err = store.CheckpointSave(sessionCheckpointFor(route.agentID, payload, event))
 	if err != nil {
 		return "", fmt.Errorf("checkpoint save: %w", err)
 	}
@@ -449,11 +533,15 @@ func hookCheckpoint(agent string, payload hookEventPayload, event string) (strin
 // session-end budget. Spawn failure is logged by the caller — consolidation
 // missing once is a lost optimisation, not a broken session.
 func hookSessionEnd(agent string, payload hookEventPayload) (string, error) {
-	store, err := openStore()
+	return hookSessionEndAt(runtimeContext{storeDir: dataDir, agentID: agent}, payload)
+}
+
+func hookSessionEndAt(route runtimeContext, payload hookEventPayload) (string, error) {
+	store, err := openStoreAt(route.storeDir)
 	if err != nil {
 		return "", fmt.Errorf("open store: %w", err)
 	}
-	if _, err := store.CheckpointSave(sessionCheckpointFor(agent, payload, "session-end")); err != nil {
+	if _, err := store.CheckpointSave(sessionCheckpointFor(route.agentID, payload, "session-end")); err != nil {
 		_ = store.Close()
 		return "", fmt.Errorf("checkpoint save: %w", err)
 	}
@@ -465,11 +553,7 @@ func hookSessionEnd(agent string, payload hookEventPayload) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve own binary: %w", err)
 	}
-	dir, err := filepath.Abs(dataDir)
-	if err != nil {
-		return "", fmt.Errorf("resolve data dir: %w", err)
-	}
-	cmd := exec.Command(exe, "consolidate", agent, "--dir", dir)
+	cmd := exec.Command(exe, "consolidate", route.agentID, "--dir", route.storeDir)
 	cmd.SysProcAttr = detachSysProcAttr()
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -554,10 +638,14 @@ func hookStatePath(dataDir string) string {
 
 // hookStateSeenBlock fails open without a session ID to avoid false suppression.
 func hookStateSeenBlock(agent, sessionID, block string) bool {
+	return hookStateSeenBlockAt(dataDir, agent, sessionID, block)
+}
+
+func hookStateSeenBlockAt(storeDir, agent, sessionID, block string) bool {
 	if sessionID == "" {
 		return false
 	}
-	data, err := os.ReadFile(hookStatePath(dataDir))
+	data, err := os.ReadFile(hookStatePath(storeDir))
 	if err != nil {
 		return false
 	}
@@ -572,10 +660,14 @@ func hookStateSeenBlock(agent, sessionID, block string) bool {
 // hookStateRecordBlock retains the latest block per identified session.
 // Best-effort failures only cost a duplicate injection.
 func hookStateRecordBlock(agent, sessionID, block string) {
+	hookStateRecordBlockAt(dataDir, agent, sessionID, block)
+}
+
+func hookStateRecordBlockAt(storeDir, agent, sessionID, block string) {
 	if sessionID == "" {
 		return
 	}
-	path := hookStatePath(dataDir)
+	path := hookStatePath(storeDir)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 
 	st := map[string]string{}
@@ -639,14 +731,18 @@ func hookBlockHash(block string) string {
 // hookLog appends one JSON line to <dataDir>/hooks.log. Best-effort by
 // contract: a logging failure must not turn into a hook failure.
 func hookLog(payload hookEventPayload, event string, elapsed time.Duration, outcome, detail string) {
-	path := filepath.Join(dataDir, "hooks.log")
+	hookLogAt(runtimeContext{storeDir: dataDir, agentID: deriveAgentID(hookCWD(payload))}, payload, event, elapsed, outcome, detail)
+}
+
+func hookLogAt(route runtimeContext, payload hookEventPayload, event string, elapsed time.Duration, outcome, detail string) {
+	path := filepath.Join(route.storeDir, "hooks.log")
 	entry := map[string]any{
 		"ts":      timeNow().UTC().Format(time.RFC3339),
 		"event":   event,
 		"outcome": outcome,
 		"ms":      elapsed.Milliseconds(),
 		"detail":  detail,
-		"agent":   deriveAgentID(hookCWD(payload)),
+		"agent":   route.agentID,
 		"session": payload.SessionID,
 	}
 	if payload.Source != "" {

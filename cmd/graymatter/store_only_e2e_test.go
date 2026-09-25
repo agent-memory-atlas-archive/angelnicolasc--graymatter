@@ -78,7 +78,7 @@ func newIssue81Fixture(t *testing.T) *issue81Fixture {
 		t.Fatalf("build CLI: %v\n%s", err, out)
 	}
 	home := filepath.Join(root, "home")
-	for _, path := range []string{home, filepath.Join(root, "tmp"), runtimeDir, filepath.Join(home, "appdata"), filepath.Join(home, "localappdata"), filepath.Join(home, "xdg")} {
+	for _, path := range []string{home, filepath.Join(root, "tmp"), runtimeDir, filepath.Join(home, "appdata"), filepath.Join(home, "localappdata"), filepath.Join(home, "xdg"), filepath.Join(home, "codex"), filepath.Join(home, "claude")} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -88,6 +88,7 @@ func newIssue81Fixture(t *testing.T) *issue81Fixture {
 		"HOME": home, "USERPROFILE": home,
 		"APPDATA": filepath.Join(home, "appdata"), "LOCALAPPDATA": filepath.Join(home, "localappdata"),
 		"XDG_CONFIG_HOME": filepath.Join(home, "xdg"), "XDG_RUNTIME_DIR": runtimeDir,
+		"CODEX_HOME": filepath.Join(home, "codex"), "CLAUDE_CONFIG_DIR": filepath.Join(home, "claude"),
 		"TMP": filepath.Join(root, "tmp"), "TEMP": filepath.Join(root, "tmp"),
 		"OPENAI_API_KEY": "", "VOYAGE_API_KEY": "", "ANTHROPIC_API_KEY": "",
 		"GRAYMATTER_OLLAMA_URL": "disabled://issue81-tests", "GRAYMATTER_KG": "0",
@@ -114,6 +115,21 @@ func issue81Env(base []string, overrides map[string]string) []string {
 	for _, item := range base {
 		key, value, ok := strings.Cut(item, "=")
 		if ok && key != "" {
+			// A present-but-empty Claude root is invalid for runtime routing.
+			// Fixtures inherit no host project anchor unless a case explicitly
+			// supplies one through overrides.
+			if strings.EqualFold(key, "CLAUDE_PROJECT_DIR") {
+				found := false
+				for override := range overrides {
+					if strings.EqualFold(override, key) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
+			}
 			values[normalize(key)] = value
 		}
 	}

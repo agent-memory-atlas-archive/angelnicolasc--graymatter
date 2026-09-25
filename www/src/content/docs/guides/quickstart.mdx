@@ -100,6 +100,14 @@ the selected Git checkout or worktree root, use the
 Keep MCP and hooks pointed at that root, or set the same absolute `--dir` for
 all three commands when using a custom store location.
 
+MCP stdio and hooks select a project root per invocation. With no `--dir`,
+they use its `.graymatter` directory. An explicit relative `--dir` resolves
+against the launching process's working directory, which can differ from the
+project root. If a prior store exists at that other location, GrayMatter asks
+you to select the destination explicitly; it does not move facts. Read the
+[project routing and migration guide](https://github.com/angelnicolasc/graymatter/blob/main/docs/runtime-project-routing.md)
+before reusing one MCP registration across repositories or worktrees.
+
 ## Optional: knowledge graph from day one
 
 ```bash

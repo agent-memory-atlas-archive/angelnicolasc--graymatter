@@ -201,6 +201,14 @@ without `init --store-only`; this command does not prevent that behavior.
 Project-scoped clients still need their own MCP config. Codex is the exception
 in the table below because its MCP config is already home-scoped.
 
+MCP stdio and hooks now select one project root per invocation. With an
+omitted `--dir`, they use that root's `.graymatter` directory; an explicit
+relative `--dir` is instead relative to the process working directory. If a
+previous process-directory store contains data at a different location,
+select the intended store explicitly rather than moving it automatically.
+See [project routing and migration](docs/runtime-project-routing.md) for
+worktree, hook namespace, custom-store, and HTTP behavior.
+
 `graymatter demo` seeds a scratch store, runs consolidation, and opens the
 TUI — then `graymatter kg render --out kg-graph.html` shows the graph it
 built. Restart your editor. Seven memory tools are live.
@@ -347,12 +355,13 @@ cross-namespace deduplication may have placed a shared fact in the project
 section. Missing sections also fall back to MCP. Focused and batch searches,
 writes, corrections, aliases, and checkpoint tools always remain available.
 
-Failure contract: every error exits 0 with empty stdout and a receipt in
-`<dataDir>/hooks.log` — a broken memory degrades silently, it never breaks
-the session. `graymatter hooks doctor` verifies registration, the recorded
-binary path, and store latency; the hot path is machine-checked in
-[`benchmarks/hook_latency`](benchmarks/hook_latency) with hardware-relative
-gates — the recall's marginal cost against the same machine's checkpoint
+Failure contract: hook errors exit 0 with empty stdout, so a broken memory
+does not break the session. Routing conflicts are reported briefly on stderr
+before a store or `hooks.log` is opened; errors after startup can leave a
+receipt in `<dataDir>/hooks.log`. `graymatter hooks doctor` verifies
+registration, the recorded binary path, and store latency; the hot path is
+machine-checked in [`benchmarks/hook_latency`](benchmarks/hook_latency) with
+hardware-relative gates — the recall's marginal cost against the same machine's checkpoint
 baseline (≤ 200 ms) and in-process scaling (≤ 2.5× of linear at 10k facts) —
 because absolute wall-clock numbers on shared CI runners measure the runner
 queue, not the code. Reference-hardware figure: p99 121 ms user-prompt on a

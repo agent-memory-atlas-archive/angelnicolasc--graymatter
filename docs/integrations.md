@@ -80,6 +80,16 @@ must run against that same root. A custom `--dir` requires matching paths in
 the MCP and hook commands. A fixed global data path shares one store between
 projects.
 
+For MCP stdio and hooks, an omitted `--dir` uses the selected project root's
+`.graymatter` directory. `CLAUDE_PROJECT_DIR` takes precedence when present;
+hook payload `cwd` is the next choice for hooks. A payload outside the Claude
+project must be corrected; a different legacy process-directory store requires
+an explicit store selection. A relative `--dir` always uses the process
+working directory, even when the project root came from Claude. HTTP uses its
+service working directory and does not infer a remote client's project. See
+[project routing and migration](runtime-project-routing.md) before reusing a
+user-scoped registration across worktrees.
+
 Command: `graymatter` (must be on PATH — check with
 `graymatter doctor`); args: `mcp serve`.
 
