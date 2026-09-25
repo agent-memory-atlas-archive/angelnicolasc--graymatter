@@ -8,8 +8,8 @@ name: Mutation
 # thresholds get switched on once that baseline is known.
 #
 # Scope: the root module only. cmd/graymatter is a separate module gremlins
-# does not see here; benchmarks/ and examples/ carry no test suite, so every
-# mutant there would be unkillable noise.
+# does not see here. Gremlins only executes test-covered mutants; its v0.5.0
+# CLI does not support excluding files at the command line.
 
 on:
   schedule:
@@ -25,12 +25,15 @@ jobs:
     name: Mutation testing (root module)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26.7"
           cache: true
+          cache-dependency-path: |
+            go.sum
+            cmd/graymatter/go.sum
 
       # Pinned release rather than @latest: the mutation operator set is what
       # makes two runs comparable, and a silent tool upgrade would move the
@@ -46,16 +49,22 @@ jobs:
         continue-on-error: true
         run: |
           "$(go env GOPATH)/bin/gremlins" unleash \
-            --exclude-files "^benchmarks/.*" \
-            --exclude-files "^examples/.*" \
-            --exclude-files "^internal/.*" \
             --output mutation-report.json \
             .
 
+      # Only the measured efficacy is report-only. Tool failure must not look
+      # like a completed measurement with an empty artifact.
+      - name: Validate mutation report
+        if: always()
+        run: |
+          test -s mutation-report.json
+          python3 -m json.tool mutation-report.json >/dev/null
+
       - name: Upload mutation report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutation-report
           path: mutation-report.json
+          if-no-files-found: error
           retention-days: 30
