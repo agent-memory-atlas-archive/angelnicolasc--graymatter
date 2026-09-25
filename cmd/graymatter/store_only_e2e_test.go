@@ -45,7 +45,30 @@ func newIssue81Fixture(t *testing.T) *issue81Fixture {
 	if testing.Short() {
 		t.Skip("requires a built CLI and subprocesses")
 	}
-	root := t.TempDir()
+	// macOS may hand out /var/... while a child reports the same cwd as
+	// /private/var/... . Keep all fixture paths on the child's canonical side.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve fixture root: %v", err)
+	}
+	runtimeDir := filepath.Join(root, "runtime")
+	if runtime.GOOS != "windows" {
+		// The daemon's fallback socket includes XDG_RUNTIME_DIR. Test temp
+		// paths can exceed macOS's 104-byte Unix socket path limit.
+		runtimeDir, err = os.MkdirTemp("/tmp", "gm81-")
+		if err != nil {
+			t.Fatalf("create short runtime dir: %v", err)
+		}
+		t.Cleanup(func() {
+			if filepath.Dir(runtimeDir) != "/tmp" {
+				t.Errorf("refusing cleanup outside /tmp: %s", runtimeDir)
+				return
+			}
+			if err := os.RemoveAll(runtimeDir); err != nil {
+				t.Errorf("remove private runtime dir: %v", err)
+			}
+		})
+	}
 	bin := filepath.Join(root, "bin", "graymatter.exe")
 	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 		t.Fatal(err)
@@ -55,7 +78,7 @@ func newIssue81Fixture(t *testing.T) *issue81Fixture {
 		t.Fatalf("build CLI: %v\n%s", err, out)
 	}
 	home := filepath.Join(root, "home")
-	for _, path := range []string{home, filepath.Join(root, "tmp"), filepath.Join(root, "runtime"), filepath.Join(home, "appdata"), filepath.Join(home, "localappdata"), filepath.Join(home, "xdg")} {
+	for _, path := range []string{home, filepath.Join(root, "tmp"), runtimeDir, filepath.Join(home, "appdata"), filepath.Join(home, "localappdata"), filepath.Join(home, "xdg")} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -64,7 +87,7 @@ func newIssue81Fixture(t *testing.T) *issue81Fixture {
 	isolated := map[string]string{
 		"HOME": home, "USERPROFILE": home,
 		"APPDATA": filepath.Join(home, "appdata"), "LOCALAPPDATA": filepath.Join(home, "localappdata"),
-		"XDG_CONFIG_HOME": filepath.Join(home, "xdg"), "XDG_RUNTIME_DIR": filepath.Join(root, "runtime"),
+		"XDG_CONFIG_HOME": filepath.Join(home, "xdg"), "XDG_RUNTIME_DIR": runtimeDir,
 		"TMP": filepath.Join(root, "tmp"), "TEMP": filepath.Join(root, "tmp"),
 		"OPENAI_API_KEY": "", "VOYAGE_API_KEY": "", "ANTHROPIC_API_KEY": "",
 		"GRAYMATTER_OLLAMA_URL": "disabled://issue81-tests", "GRAYMATTER_KG": "0",
@@ -260,9 +283,26 @@ type issue81MCP struct {
 	stdin   io.WriteCloser
 	lines   chan []byte
 	readErr chan error
-	stderr  bytes.Buffer
+	stderr  issue81LockedBuffer
 	cancel  context.CancelFunc
 	closed  sync.Once
+}
+
+type issue81LockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *issue81LockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *issue81LockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (f *issue81Fixture) startMCP(dir, command string, args []string, extra map[string]string) *issue81MCP {

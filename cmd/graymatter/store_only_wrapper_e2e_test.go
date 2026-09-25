@@ -130,6 +130,19 @@ func issue81ReadRecording(t *testing.T, path string) issue81Recording {
 	return record
 }
 
+func issue81SameFile(t *testing.T, a, b string) bool {
+	t.Helper()
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		t.Fatalf("stat recorded path %q: %v", a, err)
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		t.Fatalf("stat expected path %q: %v", b, err)
+	}
+	return os.SameFile(aInfo, bInfo)
+}
+
 func TestStoreOnlyE05_VersionedClaudeWrapper(t *testing.T) {
 	f := newIssue81Fixture(t)
 	if runtime.GOOS == "windows" {
@@ -194,10 +207,10 @@ func TestStoreOnlyE05_VersionedClaudeWrapper(t *testing.T) {
 			t.Fatalf("root wrapper inheritedNativeError=%t exit=%d err=%v stdout=%q stderr=%q", inherited, out.code, out.err, out.stdout, out.stderr)
 		}
 		record := issue81ReadRecording(t, receipt)
-		if filepath.Clean(record.CWD) != filepath.Clean(repo) || !reflect.DeepEqual(record.Args, args) {
+		if !issue81SameFile(t, record.CWD, repo) || !reflect.DeepEqual(record.Args, args) {
 			t.Errorf("root wrapper cwd/argv changed: %+v want cwd=%q argv=%q", record, repo, args)
 		}
-		if filepath.Clean(record.Exe) != filepath.Clean(firstClaude) {
+		if !issue81SameFile(t, record.Exe, firstClaude) {
 			t.Errorf("wrapper selected second installation: %q", record.Exe)
 		}
 	}
@@ -211,7 +224,7 @@ func TestStoreOnlyE05_VersionedClaudeWrapper(t *testing.T) {
 	if subOut.code != 0 {
 		t.Fatalf("subdir wrapper: %+v", subOut)
 	}
-	if got := issue81ReadRecording(t, subReceipt); filepath.Clean(got.CWD) != filepath.Clean(repo) || !reflect.DeepEqual(got.Args, []string{"from-subdir"}) {
+	if got := issue81ReadRecording(t, subReceipt); !issue81SameFile(t, got.CWD, repo) || !reflect.DeepEqual(got.Args, []string{"from-subdir"}) {
 		t.Errorf("subdir routing/args: %+v", got)
 	}
 	if _, err := os.Stat(filepath.Join(sub, ".graymatter")); !os.IsNotExist(err) {
@@ -230,7 +243,7 @@ func TestStoreOnlyE05_VersionedClaudeWrapper(t *testing.T) {
 	if wOut.code != 0 {
 		t.Fatalf("worktree wrapper: %+v", wOut)
 	}
-	if got := issue81ReadRecording(t, wReceipt); filepath.Clean(got.CWD) != filepath.Clean(worktree) || !reflect.DeepEqual(got.Args, []string{"worktree"}) {
+	if got := issue81ReadRecording(t, wReceipt); !issue81SameFile(t, got.CWD, worktree) || !reflect.DeepEqual(got.Args, []string{"worktree"}) {
 		t.Errorf("worktree routing/args: %+v", got)
 	}
 	issue81AssertOnlyMarker(t, filepath.Join(worktree, ".graymatter"))
