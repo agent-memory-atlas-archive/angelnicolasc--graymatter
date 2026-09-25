@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -798,9 +799,14 @@ func runHooksDoctorChecks(path, exeAbs string, scope hookScope) []hookCheck {
 // store cannot answer within it, per-turn injection is the wrong shape and
 // the doctor says so.
 func hooksStoreCheck() hookCheck {
-	if !hookStoreInitialized(dataDir) {
+	if _, err := inspectRuntimeStore(dataDir, true); errors.Is(err, errRuntimeStoreUnprepared) {
 		return hookCheck{
 			Name: "store", Status: "info", Detail: "store not initialised (no gray.db or MEMORY.md found)",
+		}
+	} else if err != nil {
+		return hookCheck{
+			Name: "store", Status: "fail", Detail: "store entry cannot be used safely: " + err.Error(),
+			Hint: "select a real data directory with --dir or correct the entry before running hooks",
 		}
 	}
 	start := timeNow()

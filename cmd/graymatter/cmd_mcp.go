@@ -26,6 +26,7 @@ func mcpServeCmd() *cobra.Command {
 		httpAddr string
 		token    string
 		noAuth   bool
+		noCreate bool
 	)
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -55,9 +56,13 @@ the whole memory surface, so it requires an HTTP bearer token (see
 "graymatter server --help" for where the token lives) and should be pointed at
 a loopback address:
 
-  graymatter mcp serve --http 127.0.0.1:8080`,
+  graymatter mcp serve --http 127.0.0.1:8080
+
+--no-create requires an existing regular gray.db or MEMORY.md before starting.
+It does not make the store read-only. A rejected server writes no token, starts
+no daemon, and serves no tools. Prepare with init --store-only, then reconnect.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Reject invalid options and resolve the route before token generation,
+			// Reject invalid options and unsafe leaves before token generation,
 			// daemon startup, or a listener can change the selected store.
 			if err := validateMCPHTTPOptions(httpAddr, noAuth); err != nil {
 				return err
@@ -78,6 +83,10 @@ a loopback address:
 			if err != nil {
 				return fmt.Errorf("MCP project route: %w", err)
 			}
+			if _, err := inspectRuntimeStore(route.storeDir, noCreate); err != nil {
+				return fmt.Errorf("MCP store %s: %w", route.storeDir, err)
+			}
+
 			var httpOpts []gmcp.HTTPOption
 			if httpAddr != "" {
 				var err error
@@ -111,6 +120,8 @@ a loopback address:
 		"bearer token HTTP clients must present (default: read or create <data-dir>/"+httpauth.TokenFile+")")
 	cmd.Flags().BoolVar(&noAuth, "no-auth", false,
 		"serve HTTP without authentication (loopback addresses only)")
+	cmd.Flags().BoolVar(&noCreate, "no-create", false,
+		"require an existing regular gray.db or MEMORY.md before opening the store")
 	return cmd
 }
 

@@ -201,6 +201,26 @@ without `init --store-only`; this command does not prevent that behavior.
 Project-scoped clients still need their own MCP config. Codex is the exception
 in the table below because its MCP config is already home-scoped.
 
+For a **new, opt-in guarded** Claude user registration, use `--no-create` and
+prepare each selected checkout before connecting:
+
+```sh
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve --no-create
+cd /path/to/selected/project
+graymatter init --store-only --quiet
+```
+
+Reconnect the MCP client after preparation. `--no-create` is not added to
+existing entries by `init`; update a custom registration deliberately. It
+requires a regular `gray.db`, or a regular `MEMORY.md` when the database is
+absent. It is neither a database health check nor a read-only mode: an accepted
+server can create and write runtime files. Hooks and MCP reject a symlink,
+directory, or other nonregular `gray.db` even in the default eager mode. For a
+custom store, use the same absolute `--dir` for preparation, MCP, and hooks.
+Before downgrading to a binary without `--no-create`, remove the flag from the
+registration; an older binary rejects it instead of retrying with eager
+creation.
+
 MCP stdio and hooks now select one project root per invocation. With an
 omitted `--dir`, they use that root's `.graymatter` directory; an explicit
 relative `--dir` is instead relative to the process working directory. If a

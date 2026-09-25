@@ -90,6 +90,33 @@ service working directory and does not infer a remote client's project. See
 [project routing and migration](runtime-project-routing.md) before reusing a
 user-scoped registration across worktrees.
 
+## Prepared-store admission for MCP (opt-in)
+
+The default `graymatter mcp serve` can create a valid missing store. To require
+preparation first, use `--no-create` in a new Claude user-scoped registration:
+
+```sh
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve --no-create
+cd /path/to/selected/project
+graymatter init --store-only --quiet
+```
+
+Reconnect Claude's MCP client after preparing each checkout or worktree; a
+rejected connection does not wait and retry. `init` does not append
+`--no-create` to existing custom entries. A custom store needs the same
+absolute `--dir` in the preparation, MCP, and hook commands.
+
+The guard admits an existing regular `gray.db`, or a regular `MEMORY.md` when
+the database is absent. It does not validate database health or make the
+runtime read-only: a marker-only store may acquire a database and other files
+after connection. Hooks and MCP reject a symbolic link, directory, or other
+nonregular `gray.db` even when `--no-create` is omitted; a regular marker does
+not override that rejection. HTTP keeps bearer authentication by default and
+allows `--no-auth` only on loopback. An unprepared `--no-create` HTTP server
+does not create a token, start a daemon, or bind a listener. Remove
+`--no-create` from opted-in registrations before using an older binary; an
+unknown flag fails visibly rather than falling back to eager creation.
+
 Command: `graymatter` (must be on PATH — check with
 `graymatter doctor`); args: `mcp serve`.
 

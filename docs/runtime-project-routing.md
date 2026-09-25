@@ -88,6 +88,65 @@ HTTP MCP keeps bearer authentication enabled by default. `--no-auth` remains
 an explicit loopback-only exception. Routing does not change authentication
 or the requirement for each MCP call to supply its `agent_id`.
 
+## Prepared-store admission for MCP
+
+By default, `graymatter mcp serve` can create a valid missing store when it
+starts. For a user-scoped Claude Code registration that must wait for explicit
+preparation, opt into `--no-create` and prepare each selected checkout or
+worktree before connecting:
+
+```sh
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve --no-create
+cd /path/to/selected/project
+graymatter init --store-only --quiet
+```
+
+Reconnect the MCP client after preparation and check a `memory_add` followed
+by `memory_search` with the intended explicit `agent_id`. A rejected server
+does not watch for preparation or reconnect automatically. `init --global`
+installs home-scoped instructions but does not register a user-scoped Claude
+MCP server or append `--no-create` to any existing entry. Inspect a custom
+registration before changing it.
+
+For a custom store, select the same **absolute** path in preparation, MCP,
+and hook commands. For example, prepare with
+`graymatter --dir /absolute/path/to/store init --store-only --quiet`, register
+`graymatter --dir /absolute/path/to/store mcp serve --no-create`, and install
+hooks with that `--dir`. An omitted `--dir` keeps the project-based dynamic
+selection described above.
+
+`--no-create` admits a store with an existing regular `gray.db`, even if that
+database is empty, corrupt, or read-only. If the database is absent, a regular
+`MEMORY.md` admits first opening. Only logs or other runtime files do not
+prepare a store. This is an **admission check**, not a database health check
+or a read-only mode. A marker-only store can acquire a database and other
+runtime files after acceptance; a corrupt or inaccessible database may pass
+admission and then fail when the runtime opens it. An unprepared stdio or HTTP
+server exits with an actionable error and empty stdout before generating or
+reading a token, starting a daemon, or binding a listener. The default mode
+remains eager for a valid missing store.
+
+Hooks and MCP reject a `gray.db` leaf that is a symbolic link, reparse point,
+directory, device, or another nonregular entry, even when `--no-create` is
+omitted and even if `MEMORY.md` is regular. An alias for the **data directory**
+itself can still resolve to a valid directory. This leaf check does not detect
+hardlinks to a regular database or protect against replacement after
+inspection. A guarded hook keeps its fail-soft exit status 0 and empty
+stdout on rejection; MCP exits nonzero with stderr explaining the selected
+store. Rejected hooks do not write `hooks.log` before opening the store.
+
+HTTP MCP retains bearer authentication by default, and `--no-auth` remains
+available only for an explicit loopback listener. `--no-create` does not
+change either policy or the requirement for a remote caller to provide
+`agent_id`; it only checks the selected service store before HTTP side
+effects.
+
+Before downgrading to a binary without `mcp serve --no-create`, remove the
+flag from each opted-in MCP registration. An older binary rejects the unknown
+flag visibly; there is no automatic retry with eager creation. Decide whether
+that older binary may create missing stores before removing the flag. Neither
+downgrade nor routing changes move facts or rewrite namespace IDs.
+
 ## Compatibility and recovery
 
 1. Check the launcher's process working directory and, for Claude Code,

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,8 +35,8 @@ import (
 //     context (SessionStart and UserPromptSubmit). For the other two events
 //     stdout is not injected, so the runners print nothing.
 //   - Runtime handler errors: exit 0, empty stdout, with a receipt in the
-//     selected store's hooks.log. Invalid routing and no-create rejections
-//     stop before any store-side write.
+//     selected store's hooks.log. Invalid routing, unsafe database leaves,
+//     and no-create rejections stop before any store-side write.
 
 const (
 	// hookLatencyBudget is the per-turn budget the user-prompt hook must meet
@@ -111,8 +112,8 @@ and writes injectable context to stdout.
 Events: session-start, user-prompt, pre-compact, session-end.
 
 Failures exit 0 with empty stdout. Handler errors log to the selected store;
-invalid routing and --no-create rejections stop before opening or logging to
-a store.`,
+invalid routing, unsafe database entries, and --no-create rejections stop
+before opening or logging to a store.`,
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: []string{"session-start", "user-prompt", "pre-compact", "session-end"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -234,7 +235,10 @@ func runHookEventWithPolicySelected(event string, noCreate bool, policy string, 
 		fmt.Fprintln(os.Stderr, "graymatter hook skipped: invalid or conflicting project route")
 		return nil // fail soft without writing to a possibly wrong store
 	}
-	if noCreate && !hookStoreInitialized(route.storeDir) {
+	if _, err := inspectRuntimeStore(route.storeDir, noCreate); err != nil {
+		if !errors.Is(err, errRuntimeStoreUnprepared) {
+			fmt.Fprintln(os.Stderr, "graymatter hook skipped: invalid store entry")
+		}
 		return nil
 	}
 
@@ -310,16 +314,6 @@ func mustWorkdir() string {
 		return ""
 	}
 	return wd
-}
-
-func hookStoreInitialized(dir string) bool {
-	for _, marker := range []string{"gray.db", "MEMORY.md"} {
-		info, err := os.Stat(filepath.Join(dir, marker))
-		if err == nil && info.Mode().IsRegular() {
-			return true
-		}
-	}
-	return false
 }
 
 var hookAgentSanitize = regexp.MustCompile(`[^a-z0-9]+`)

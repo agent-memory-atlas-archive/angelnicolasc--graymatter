@@ -90,6 +90,24 @@ If the user-scoped MCP registration is missing, add it once:
 claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
 ```
 
+To require preparation before MCP can open a new project store, choose this
+opt-in registration instead for a new user-scoped entry:
+
+```bash
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve --no-create
+cd /path/to/selected/project
+graymatter init --store-only --quiet
+```
+
+Reconnect Claude's MCP client after preparation. `--no-create` is not added to
+existing custom entries by `init`; change such an entry deliberately. The flag
+requires a regular `gray.db` or `MEMORY.md`, but it is not read-only and does
+not validate database health. An accepted server can still create `gray.db`.
+Hooks and MCP reject a symlink, directory, or other nonregular `gray.db` even
+without the flag. HTTP remains authenticated by default; `--no-auth` is only
+allowed on loopback. Remove `--no-create` from the registration before using
+an older binary, which rejects the unknown flag.
+
 `init --store-only` creates `.graymatter/MEMORY.md` only if neither it nor a
 regular `gray.db` exists. It does not write MCP configs, agent instructions,
 hooks or `PATH`, and it does not verify the database or client routing. Global
