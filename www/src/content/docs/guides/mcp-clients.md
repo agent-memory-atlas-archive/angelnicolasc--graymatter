@@ -8,8 +8,9 @@ from other MCP servers are merged, never overwritten.
 
 `graymatter init --global` still initializes the current project. The flag
 also installs home-scoped agent instructions; it does not globalize the
-project-scoped MCP configs below, so wire each repository separately with
-`init` or manual configuration. Codex's MCP config is already home-scoped.
+project-scoped MCP configs below. Projects using those configs still need
+client wiring, while an existing user-scoped Claude MCP registration can be
+reused across repositories. Codex's MCP config is already home-scoped.
 
 | Client | Config file | Scope |
 |--------|-------------|-------|
@@ -23,6 +24,39 @@ project-scoped MCP configs below, so wire each repository separately with
 
 **Also works out of the box:** Pi (reads `.mcp.json` natively), Zed, Cline,
 and any MCP-compatible client — point them at `graymatter mcp serve`.
+
+## Claude Code with a user-scoped server
+
+Register GrayMatter with Claude once at user scope if you have not already:
+
+```sh
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
+```
+
+Global memory instructions can be installed with `graymatter init --global`,
+which also performs ordinary setup in the current project. Global hooks are
+optional: `graymatter hooks install --scope global` keeps their guard against
+unprepared directories.
+
+With MCP and instructions already available, prepare only the current
+project's store before a session using a build that includes this Unreleased
+flag (the v0.19.1 release does not):
+
+```sh
+graymatter init --store-only --quiet
+```
+
+The command creates `.graymatter/MEMORY.md` only when neither that marker nor
+a regular `gray.db` exists. It does not write client configs, instructions or
+hooks, open the DB, or check runtime health. If neither leaf is regular,
+symlink or other nonregular entries are rejected; use `--dir` to select the
+real data directory. MCP itself can create `gray.db`
+when it starts, even without this command. For scripts that locate the Git
+checkout or worktree root before launching Claude, see the
+[Claude Code launcher examples](https://github.com/angelnicolasc/graymatter/tree/main/examples/claude-global).
+Launch MCP and hooks against the same root. A custom `--dir` must also be
+configured on each MCP and hook invocation; a single fixed path shares its
+store between projects.
 
 ## Manual wiring
 

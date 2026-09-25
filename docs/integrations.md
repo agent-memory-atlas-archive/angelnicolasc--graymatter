@@ -21,9 +21,38 @@ Two ways to wire a client:
 `graymatter init --global` still runs the normal auto-wiring in the current
 project. The flag additionally writes the managed memory instructions to
 Claude Code and OpenCode's home directories; it does not turn project-scoped
-MCP configs into global ones. Each repository that needs those configs must be
-wired separately with `graymatter init` or the manual config below. Codex is
-the exception because its config is already home-scoped.
+MCP configs into global ones. A repository still needs its own client wiring
+when the client uses project-scoped MCP config; an existing user-scoped Claude
+MCP registration can be reused across repositories. Codex's config is already
+home-scoped.
+
+For Claude Code, register the MCP server once at user scope if it is not
+already registered:
+
+```sh
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
+```
+
+If global instructions and MCP registration already exist, a new project's
+local memory directory can be prepared without rewriting either. This
+Unreleased flag requires a build containing it; v0.19.1 does not:
+
+```sh
+graymatter init --store-only --quiet
+```
+
+This creates `.graymatter/MEMORY.md` only when there is no regular marker or
+`gray.db`. An existing regular database is left alone. The command does not
+install hooks or client configuration, change `PATH`, open or validate the
+database, or remove old setup files. Global hooks are optional; install them
+with `graymatter hooks install --scope global`. They skip unprepared
+directories. MCP can create `gray.db` at startup even without a prior init.
+For Git-root launch scripts, see
+[the Claude Code examples](../examples/claude-global/README.md). The scripts
+prepare the selected checkout or worktree before starting Claude; MCP and hooks
+must run against that same root. A custom `--dir` requires matching paths in
+the MCP and hook commands. A fixed global data path shares one store between
+projects.
 
 Command: `graymatter` (must be on PATH — check with
 `graymatter doctor`); args: `mcp serve`.
@@ -92,6 +121,10 @@ mismatch reruns both project and `__shared__` searches so cross-namespace
 deduplication cannot hide a shared fact; missing sections also fall back to
 MCP. Focused searches, writes, corrections, aliases, and checkpoints remain
 available.
+
+`init --store-only` prepares the local store and is independent of this MCP
+registration. It does not tell you which client configuration takes precedence
+or whether the database is healthy.
 
 ### Claude Desktop (verified)
 

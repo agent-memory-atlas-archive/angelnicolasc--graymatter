@@ -483,6 +483,7 @@ Other useful subcommands:
 | Command | Purpose |
 |---------|---------|
 | `graymatter init` | Wire MCP into Claude Code, Cursor, Codex, OpenCode, Antigravity (see [README.md](../README.md)); `--kg` persists graph auto-population, `--hooks` installs Claude Code memory hooks |
+| `graymatter init --store-only [--dir <path>]` | Prepare the selected local store directory only: create `MEMORY.md` if neither it nor a regular `gray.db` exists; do not wire clients, open the DB, change `PATH`, or verify runtime health. `--quiet` suppresses the success message; `--json` returns a machine-readable result. |
 | `graymatter demo` | Seed a scratch multi-agent store, run consolidation, open the TUI — one command, no keys |
 | `graymatter hooks install` / `uninstall` / `doctor` | Manage Claude Code automatic memory hooks (per-turn injection of agent facts + `__shared__` conventions, `remember:` / `remember shared:` instant-save, /compact survival); every hook failure degrades silently |
 | `graymatter recall <agent> "<query>" --explain` | Receipts per fact: per-signal RRF ranks, fused score, weight, age, provenance (`fact_id`, `written_at`) — same JSON shape as the MCP `explain` payload |

@@ -271,8 +271,10 @@ func runInteractiveWizard(dir, projectDir string, quiet bool) error {
 // it, reports the fact without any restart wording (the single authoritative
 // restart instruction lives in printNextSteps), and returns whether the PATH
 // was actually modified.
+var initAddExeDirToUserPath = addExeDirToUserPath
+
 func maybeAddToPath(quiet bool) bool {
-	added, pathErr := addExeDirToUserPath()
+	added, pathErr := initAddExeDirToUserPath()
 	if pathErr != nil {
 		if !quiet {
 			exe, _ := os.Executable()

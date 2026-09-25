@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  printf '%s\n' 'Run gm-claude inside a Git checkout or worktree.' >&2
+  exit 2
+}
+
+cd -- "$project_root"
+graymatter init --store-only --quiet
+exec claude "$@"

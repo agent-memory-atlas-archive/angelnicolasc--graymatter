@@ -163,9 +163,36 @@ graymatter doctor            # verify everything
 `graymatter init --global` still performs that normal setup in the current
 directory. It additionally installs the managed memory instructions in Claude
 Code and OpenCode's home-scoped instruction files. It does **not** globalize
-project-scoped MCP configs: each repository must be wired separately with
-`graymatter init` or manual client configuration. Codex is the exception in
-the table below because its MCP config is already home-scoped.
+project-scoped MCP configs. If Claude's MCP server is already registered at
+user scope and the instructions are already available globally, you do not
+need to repeat local client setup in each repository. For a new user-scoped
+Claude MCP registration, run once:
+
+```sh
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
+```
+
+To prepare only the current project's memory directory before a session, use
+`graymatter init --store-only` in a build containing this Unreleased change;
+the v0.19.1 binaries listed below do not include it. It creates
+`.graymatter/MEMORY.md` if needed and leaves an existing regular
+`.graymatter/gray.db` untouched. It does not
+write client configs, instructions or hooks, change `PATH`, open the database,
+or verify runtime health. If neither leaf is regular, symlink or other
+nonregular `MEMORY.md`/`gray.db` entries cause an error; use `--dir` to select
+the real data directory. You can repeat it safely:
+
+```sh
+graymatter init --store-only --quiet
+```
+
+For launchers that find the Git checkout or worktree root before running this
+command, see [the Claude Code examples](examples/claude-global/README.md).
+Global hooks are optional (`graymatter hooks install --scope global`) and skip
+unprepared directories. MCP can itself create `gray.db` when it starts, even
+without `init --store-only`; this command does not prevent that behavior.
+Project-scoped clients still need their own MCP config. Codex is the exception
+in the table below because its MCP config is already home-scoped.
 
 `graymatter demo` seeds a scratch store, runs consolidation, and opens the
 TUI — then `graymatter kg render --out kg-graph.html` shows the graph it

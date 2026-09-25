@@ -25,6 +25,7 @@ func initCmd() *cobra.Command {
 		only             string
 		enableKG         bool
 		installHooks     bool
+		storeOnly        bool
 	)
 
 	cmd := &cobra.Command{
@@ -50,8 +51,23 @@ config is already home-scoped.
 On Windows, init appends the executable's directory to your user PATH
 (HKCU\Environment). Pass --no-path to skip that: a PATH entry pointing at a
 directory other people can write is a hijack vector for every process that
-resolves a command through it.`,
+resolves a command through it.
+
+Use --store-only to prepare only the selected data directory. It creates a
+complete MEMORY.md marker if neither MEMORY.md nor gray.db already exists.
+It never opens the database, starts the runtime, or writes client configs,
+instructions, hooks, or PATH. Existing regular files are left untouched.
+Non-regular marker/database entries are rejected unless the other entry is a
+regular file; select the real directory with --dir if a marker is a symlink.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if storeOnly {
+				return runStoreOnlyInit(cmd, args, storeOnlyInitOptions{
+					dataDir: dataDir, global: global, hooks: installHooks,
+					interactive: interactive, withAntigravity: withAntigravity,
+					kg: enableKG, onlyChanged: cmd.Flags().Changed("only"),
+					quiet: quiet, json: jsonOut,
+				})
+			}
 			if interactive {
 				if err := runInteractiveWizard(dataDir, ".", quiet); err != nil {
 					return err
@@ -243,6 +259,7 @@ resolves a command through it.`,
 	}
 
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "interactive setup wizard (prompts for which agents to wire)")
+	cmd.Flags().BoolVar(&storeOnly, "store-only", false, "prepare only the selected data directory; leave clients, instructions, hooks, runtime, and PATH untouched")
 	cmd.Flags().BoolVar(&skipClaudeCode, "skip-claudecode", false, "do not touch .mcp.json")
 	cmd.Flags().BoolVar(&skipCursor, "skip-cursor", false, "do not touch .cursor/mcp.json")
 	cmd.Flags().BoolVar(&skipCodex, "skip-codex", false, "do not touch ~/.codex/config.toml")

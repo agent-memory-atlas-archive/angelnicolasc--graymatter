@@ -51,9 +51,9 @@ your editor — done.
 
      `graymatter init --global` still performs this setup for the current
      project. It additionally installs home-scoped agent instructions; it does
-     not globalize project-scoped MCP configs, so wire each repository with
-     `init` or manual client configuration. Codex's MCP config is already
-     home-scoped.
+     not globalize project-scoped MCP configs. Those clients still need wiring
+     in each repository. A user-scoped Claude MCP registration can be reused
+     across repositories, and Codex's MCP config is already home-scoped.
 
   2. Verify:
      ```bash
@@ -64,6 +64,33 @@ your editor — done.
      `memory_add`, `memory_alias`, `checkpoint_save`, `checkpoint_resume`,
      and `memory_reflect`.
 </Steps>
+
+## Already using Claude Code globally?
+
+If Claude already has GrayMatter's MCP server at user scope and can read your
+global memory instructions, you can prepare a new project's local store
+without repeating client setup. This Unreleased flag requires a build that
+includes it; the v0.19.1 binaries do not:
+
+```bash
+graymatter init --store-only --quiet
+```
+
+If the user-scoped MCP registration is missing, add it once:
+
+```bash
+claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
+```
+
+`init --store-only` creates `.graymatter/MEMORY.md` only if neither it nor a
+regular `gray.db` exists. It does not write MCP configs, agent instructions,
+hooks or `PATH`, and it does not verify the database or client routing. Global
+Claude hooks are optional (`graymatter hooks install --scope global`). MCP may
+create `gray.db` when it starts even if you have not run init. To launch from
+the selected Git checkout or worktree root, use the
+[Claude Code launcher examples](https://github.com/angelnicolasc/graymatter/tree/main/examples/claude-global).
+Keep MCP and hooks pointed at that root, or set the same absolute `--dir` for
+all three commands when using a custom store location.
 
 ## Optional: knowledge graph from day one
 
