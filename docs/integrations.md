@@ -310,9 +310,18 @@ send the PR with the client version you tested against.
 ## Verifying a wiring
 
 ```sh
-graymatter doctor        # data dir, binary on PATH, store health
+graymatter doctor        # read-only data dir, PATH identity, store and config observations
 graymatter hooks doctor  # hooks registration, binary path, latency
 ```
+
+The standard `doctor` command does not write a probe, start a daemon, run a
+binary found on PATH, or test data directory writability. Its MCP config check
+detects text references; it does not establish which settings, arguments, or
+environment a client actually loads. JSON reports `diagnostic_mode: read_only`,
+`readiness: not_evaluated`, and `data_dir_writability: not_tested`; `ok` means
+no diagnostic check failed. `doctor --health`, `--graph`, `--audit`,
+`--embeddings`, and `hooks doctor` have separate contracts. In particular,
+graph rendering can write an HTML file.
 
 Every MCP client can also be smoke-tested directly:
 
