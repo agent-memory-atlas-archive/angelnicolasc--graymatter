@@ -15,6 +15,8 @@ import (
 
 func initAllowAuditSACLForTest(t *testing.T) {}
 
+func initSetStableReplacementMetadataForTest(t *testing.T, path string) {}
+
 func initUnixReplacePlan(t *testing.T) (*initFilePlan, string, []byte) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")

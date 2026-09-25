@@ -13,15 +13,69 @@ import (
 
 func initAllowAuditSACLForTest(t *testing.T) {
 	t.Helper()
+	// These fixtures exercise DACL, file identity, and publication behavior
+	// under ordinary Windows tokens. Audit and mandatory-label reads can be
+	// denied by the runner; supply stable descriptors for those two fields
+	// only. Production still requires both real descriptors and rejects a
+	// replacement when either cannot be inspected.
+	audit, err := windows.SecurityDescriptorFromString("S:(AU;SA;FA;;;WD)")
+	if err != nil || audit == nil || !audit.IsValid() {
+		t.Fatalf("synthetic audit descriptor: %v", err)
+	}
+	label, err := windows.SecurityDescriptorFromString("S:(ML;;NW;;;ME)")
+	if err != nil || label == nil || !label.IsValid() {
+		t.Fatalf("synthetic label descriptor: %v", err)
+	}
 	previous := initReadWindowsSecurityInfo
 	initReadWindowsSecurityInfo = func(handle windows.Handle, objectType windows.SE_OBJECT_TYPE,
 		kind windows.SECURITY_INFORMATION) (*windows.SECURITY_DESCRIPTOR, error) {
-		if kind == windows.SACL_SECURITY_INFORMATION {
-			return previous(handle, objectType, windows.LABEL_SECURITY_INFORMATION)
+		switch kind {
+		case windows.SACL_SECURITY_INFORMATION:
+			return audit, nil
+		case windows.LABEL_SECURITY_INFORMATION:
+			return label, nil
 		}
 		return previous(handle, objectType, kind)
 	}
 	t.Cleanup(func() { initReadWindowsSecurityInfo = previous })
+}
+
+func initSetStableReplacementMetadataForTest(t *testing.T, path string) {
+	t.Helper()
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		t.Fatalf("current user SID: %v", err)
+	}
+	initSetWindowsDACLForTest(t, path, fmt.Sprintf(
+		"D:P(A;;FA;;;%s)(A;;FA;;;SY)", user.User.Sid.String()))
+}
+
+func initSetWindowsDACLForTest(t *testing.T, path, sddl string) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(name, windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestInitI10WindowsRejectsSquattedMutex(t *testing.T) {
@@ -31,6 +85,7 @@ func TestInitI10WindowsRejectsSquattedMutex(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	initSetStableReplacementMetadataForTest(t, path)
 	plan, err := planInitFile(path, 0o600, func([]byte, bool) ([]byte, string, error) {
 		return []byte(`{"owner":"after"}`), "updated", nil
 	})
@@ -60,7 +115,7 @@ func TestInitI10WindowsRejectsSquattedMutex(t *testing.T) {
 	defer windows.CloseHandle(handle)
 	out := plan.apply()
 	if out.status != "failed" || out.err == nil || out.err.Error() != "initialization_busy" {
-		t.Fatalf("squatted mutex accepted: %+v", out)
+		t.Fatalf("squatted mutex accepted: %+v; err=%v", out, out.err)
 	}
 	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, before) {
 		t.Fatalf("squatted mutex changed target: %s err=%v", data, err)
@@ -82,31 +137,10 @@ func TestInitI09WindowsRejectsACLDriftToStageDefaults(t *testing.T) {
 	if err != nil || user == nil || user.User.Sid == nil {
 		t.Fatalf("current user SID: %v", err)
 	}
-	custom, err := windows.SecurityDescriptorFromString(fmt.Sprintf(
-		"D:P(A;;GA;;;%s)(A;;GA;;;SY)", user.User.Sid.String()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	customDACL, _, err := custom.DACL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	name, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	handle, err := windows.CreateFile(name, windows.READ_CONTROL|windows.WRITE_DAC,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer windows.CloseHandle(handle)
-	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil, nil, customDACL, nil); err != nil {
-		t.Fatal(err)
-	}
+	private := fmt.Sprintf("D:P(A;;FA;;;%s)(A;;FA;;;SY)", user.User.Sid.String())
+	broader := fmt.Sprintf("D:P(A;;FA;;;%s)(A;;FA;;;SY)(A;;FR;;;WD)", user.User.Sid.String())
+	initSetWindowsDACLForTest(t, path, private)
+	initSetWindowsDACLForTest(t, sibling, broader)
 	plan, err := planInitFile(path, 0o600, func([]byte, bool) ([]byte, string, error) {
 		return []byte(`{"owner":"after"}`), "updated", nil
 	})
@@ -119,28 +153,16 @@ func TestInitI09WindowsRejectsACLDriftToStageDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fresh.Close()
-	defaultSD, err := windows.GetSecurityInfo(windows.Handle(fresh.Fd()), windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defaultDACL, _, err := defaultSD.DACL()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
-		nil, nil, defaultDACL, nil); err != nil {
-		t.Fatal(err)
-	}
-	// The new ACL now matches a fresh sibling (and the staged file), so
-	// comparing source only with stage would miss the preflight drift.
+	initSetWindowsDACLForTest(t, path, broader)
+	// The post-plan ACL now matches a separately created file. Comparing the
+	// source only with a stage cloned from its current ACL would miss drift
+	// from the private preflight snapshot.
 	if err := initStageMetadata(fresh, plan.holder, plan.info); err != nil {
-		t.Fatalf("ACL drift fixture does not match stage defaults: %v", err)
+		t.Fatalf("ACL drift fixture does not match broader sibling: %v", err)
 	}
 	out := plan.apply()
 	if out.status != "failed" || out.err == nil || out.err.Error() != "unsupported_metadata" {
-		t.Fatalf("ACL drift accepted: %+v", out)
+		t.Fatalf("ACL drift accepted: %+v; err=%v", out, out.err)
 	}
 	if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, before) {
 		t.Fatalf("ACL drift changed target: %s err=%v", data, err)
@@ -198,6 +220,7 @@ func TestInitI09WindowsStageBirthMetadataBeforeContent(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"owner":"before"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	initSetStableReplacementMetadataForTest(t, path)
 	plan, err := planInitFile(path, 0o600, func([]byte, bool) ([]byte, string, error) {
 		return []byte(`{"owner":"after"}`), "updated", nil
 	})
