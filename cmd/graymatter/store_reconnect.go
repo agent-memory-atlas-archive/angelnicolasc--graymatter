@@ -39,12 +39,17 @@ var (
 // running, so the usual outcome of a redial is a fresh daemon and a served
 // request rather than an error.
 type reconnectingStore struct {
-	mu  sync.Mutex
-	cur cliStore
+	mu     sync.Mutex
+	cur    cliStore
+	reopen func() (cliStore, error)
 }
 
 func newReconnectingStore(initial cliStore) *reconnectingStore {
-	return &reconnectingStore{cur: initial}
+	return newReconnectingStoreAt(initial, reopenStore)
+}
+
+func newReconnectingStoreAt(initial cliStore, reopen func() (cliStore, error)) *reconnectingStore {
+	return &reconnectingStore{cur: initial, reopen: reopen}
 }
 
 // reopenStore returns a fresh, unwrapped daemon handle.
@@ -75,7 +80,11 @@ func (r *reconnectingStore) redial(failed cliStore) (cliStore, error) {
 	if r.cur != failed {
 		return r.cur, nil
 	}
-	next, err := reopenStore()
+	redial := r.reopen
+	if redial == nil {
+		redial = reopenStore
+	}
+	next, err := redial()
 	if err != nil {
 		return nil, err
 	}

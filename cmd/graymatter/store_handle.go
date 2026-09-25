@@ -144,6 +144,27 @@ func openStore() (cliStore, error) {
 	return newReconnectingStore(s), nil
 }
 
+// openStoreAt binds a runtime invocation to one resolved directory. Unlike
+// openStore, reconnects cannot pick up a later change to the CLI's global
+// dataDir or process working directory.
+func openStoreAt(dir string) (cliStore, error) {
+	if noDaemon || os.Getenv("GRAYMATTER_NO_DAEMON") == "1" {
+		return openDirectStoreAt(dir)
+	}
+	connect := func() (cliStore, error) {
+		client, err := daemon.Connect(dir)
+		if err != nil {
+			return nil, err
+		}
+		return daemonStore{Client: client}, nil
+	}
+	initial, err := connect()
+	if err != nil {
+		return nil, err
+	}
+	return newReconnectingStoreAt(initial, connect), nil
+}
+
 // --- direct (in-process) implementation --------------------------------------
 
 // directStore wraps a Memory + raw db for --no-daemon operation. It is also
@@ -154,8 +175,12 @@ type directStore struct {
 }
 
 func openDirectStore() (*directStore, error) {
+	return openDirectStoreAt(dataDir)
+}
+
+func openDirectStoreAt(dir string) (*directStore, error) {
 	cfg := graymatter.DefaultConfig()
-	cfg.DataDir = dataDir
+	cfg.DataDir = dir
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
 		return nil, err

@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -28,10 +30,14 @@ func mcpServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the MCP server (stdio by default)",
+		Args:  cobra.NoArgs,
 		Long: `Start GrayMatter as a Model Context Protocol server.
 
 By default it uses stdio transport, which is what Claude Code and Cursor expect.
-Use --http to expose an HTTP endpoint instead.
+Stdio selects CLAUDE_PROJECT_DIR when present, otherwise the process directory;
+--dir explicitly selects a store without changing a client's agent_id.
+Use --http to expose an HTTP endpoint instead. HTTP selects its store from
+the service's own working directory or an explicit --dir.
 
 Claude Code setup — add to your project's .mcp.json:
 
@@ -51,18 +57,37 @@ a loopback address:
 
   graymatter mcp serve --http 127.0.0.1:8080`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Resolve auth before opening the store: a refused flag
-			// combination should not leave a daemon connection behind.
+			// Reject invalid options and resolve the route before token generation,
+			// daemon startup, or a listener can change the selected store.
+			if err := validateMCPHTTPOptions(httpAddr, noAuth); err != nil {
+				return err
+			}
+			cwd, cwdErr := os.Getwd()
+			claudeRoot, claudeRootPresent := os.LookupEnv("CLAUDE_PROJECT_DIR")
+			transport := runtimeMCPStdio
+			if httpAddr != "" {
+				transport = runtimeMCPHTTP
+			}
+			dirFlag := cmd.Flag("dir")
+			route, err := resolveRuntimeContext(runtimeContextInput{
+				configuredDir: dataDir, dirChanged: dirFlag != nil && dirFlag.Changed,
+				capturedCWD: cwd, cwdErr: cwdErr,
+				claudeProjectDir: claudeRoot, claudeProjectDirPresent: claudeRootPresent,
+				transport: transport,
+			})
+			if err != nil {
+				return fmt.Errorf("MCP project route: %w", err)
+			}
 			var httpOpts []gmcp.HTTPOption
 			if httpAddr != "" {
 				var err error
-				httpOpts, err = resolveMCPHTTPAuth(cmd, httpAddr, token, noAuth)
+				httpOpts, err = resolveMCPHTTPAuthAt(cmd, httpAddr, token, noAuth, route.storeDir)
 				if err != nil {
 					return err
 				}
 			}
 
-			store, err := openStore()
+			store, err := openStoreAt(route.storeDir)
 			if err != nil {
 				return fmt.Errorf("open memory: %w", err)
 			}
@@ -89,10 +114,34 @@ a loopback address:
 	return cmd
 }
 
+// validateMCPHTTPOptions performs syntax and exposure checks without touching
+// the token file or store. A successful bind is intentionally not promised.
+func validateMCPHTTPOptions(addr string, noAuth bool) error {
+	if addr == "" {
+		return nil
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid MCP HTTP listen address %q: %w", addr, err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("invalid MCP HTTP listen port in %q", addr)
+	}
+	if noAuth && !httpauth.IsLoopback(addr) {
+		return fmt.Errorf("refusing --no-auth on %s: bind loopback or drop --no-auth", addr)
+	}
+	return nil
+}
+
 // resolveMCPHTTPAuth mirrors resolveServerAuth for the MCP transport: the two
 // listeners share a token file, so a client configured for one already has the
 // credential for the other.
 func resolveMCPHTTPAuth(cmd *cobra.Command, addr, token string, noAuth bool) ([]gmcp.HTTPOption, error) {
+	return resolveMCPHTTPAuthAt(cmd, addr, token, noAuth, dataDir)
+}
+
+func resolveMCPHTTPAuthAt(cmd *cobra.Command, addr, token string, noAuth bool, selectedDir string) ([]gmcp.HTTPOption, error) {
 	out := cmd.OutOrStderr()
 
 	if noAuth {
@@ -112,12 +161,12 @@ func resolveMCPHTTPAuth(cmd *cobra.Command, addr, token string, noAuth bool) ([]
 			created bool
 			err     error
 		)
-		token, created, err = httpauth.LoadOrCreateToken(dataDir)
+		token, created, err = httpauth.LoadOrCreateToken(selectedDir)
 		if err != nil {
 			return nil, err
 		}
 		if created && !quiet {
-			printTokenLocation(out, httpauth.TokenFilePath(dataDir))
+			printTokenLocation(out, httpauth.TokenFilePath(selectedDir))
 		}
 	}
 
