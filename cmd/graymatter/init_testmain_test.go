@@ -9,5 +9,6 @@ import (
 // the real user PATH, including tests that run the interactive wizard.
 func TestMain(m *testing.M) {
 	initAddExeDirToUserPath = func() (bool, error) { return false, nil }
+	initPreflightPath = func() error { return nil }
 	os.Exit(m.Run())
 }
