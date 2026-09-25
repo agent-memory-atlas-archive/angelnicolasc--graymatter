@@ -359,8 +359,24 @@ func (f *issue81Fixture) startMCP(dir, command string, args []string, extra map[
 	m.request(1, "initialize", map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "issue81-e2e", "version": "1"}})
 	m.send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	listed := m.request(2, "tools/list", map[string]any{})
-	if !bytes.Contains(listed, []byte("memory_add")) || !bytes.Contains(listed, []byte("memory_search")) {
-		f.t.Fatalf("MCP tools/list omitted memory operations: %s", listed)
+	var catalog struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(listed, &catalog); err != nil {
+		f.t.Fatalf("decode MCP tools/list: %v", err)
+	}
+	want := map[string]bool{
+		"memory_search": true, "memory_search_batch": true,
+		"memory_add": true, "memory_alias": true, "memory_reflect": true,
+		"checkpoint_save": true, "checkpoint_resume": true,
+	}
+	for _, tool := range catalog.Tools {
+		delete(want, tool.Name)
+	}
+	if len(want) != 0 {
+		f.t.Fatalf("MCP tools/list is incomplete: got=%d missing=%v", len(catalog.Tools), want)
 	}
 	return m
 }

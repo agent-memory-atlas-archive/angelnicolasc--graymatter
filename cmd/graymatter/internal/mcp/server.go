@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -313,14 +314,19 @@ func (s *Server) ServeHTTP(addr string, opts ...HTTPOption) error {
 		h = httpauth.Middleware(cfg.token, h)
 	}
 
-	fmt.Printf("graymatter MCP server listening on %s\n", addr)
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           h,
 		ReadHeaderTimeout: httpReadHeaderTimeout,
 		IdleTimeout:       httpIdleTimeout,
 	}
-	return srv.ListenAndServe()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = listener.Close() }()
+	fmt.Printf("graymatter MCP server listening on %s\n", listener.Addr())
+	return srv.Serve(listener)
 }
 
 // Tool annotations. Clients read these hints to decide whether a call needs
