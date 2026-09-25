@@ -106,6 +106,14 @@ the previous file as .bak.`,
 			if err != nil {
 				return err
 			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			selection, err := resolveStoreSelection(dataDir, cmd.Flags().Changed("dir") || rootCmd.PersistentFlags().Changed("dir"), cwd)
+			if err != nil {
+				return err
+			}
 
 			for _, sc := range scopes {
 				path, err := claudeSettingsPath(sc)
@@ -116,7 +124,7 @@ the previous file as .bak.`,
 				if cmd.Flags().Changed("packet-policy") {
 					requested = &packetPolicy
 				}
-				res, err := upsertHookSettingsPolicy(path, exe, true, sc, requested)
+				res, err := upsertHookSettingsPolicySelection(path, exe, true, sc, requested, selection)
 				if err != nil {
 					return err
 				}
@@ -268,6 +276,10 @@ func upsertHookSettings(path, exe string, install bool, scopes ...hookScope) (ho
 }
 
 func upsertHookSettingsPolicy(path, exe string, install bool, scope hookScope, requested *string) (hookSettingsResult, error) {
+	return upsertHookSettingsPolicySelection(path, exe, install, scope, requested, storeSelection{})
+}
+
+func upsertHookSettingsPolicySelection(path, exe string, install bool, scope hookScope, requested *string, selection storeSelection) (hookSettingsResult, error) {
 	res := hookSettingsResult{Path: path}
 	if requested != nil && !validHookPacketPolicy(*requested) {
 		return res, fmt.Errorf("invalid packet policy (want native or lexical)")
@@ -322,7 +334,7 @@ func upsertHookSettingsPolicy(path, exe string, install bool, scope hookScope, r
 	drifted := false
 	unmanaged := []string{}
 	for _, event := range hookEventNames() {
-		want := hookGroupsForPolicy(exe, event, scope, policy)
+		want := hookGroupsForPolicySelection(exe, event, scope, policy, selection)
 		if !install {
 			want = nil
 		}
@@ -540,8 +552,12 @@ func hookGroupsFor(exe, event string, scopes ...hookScope) []any {
 }
 
 func hookGroupsForPolicy(exe, event string, scope hookScope, policy string) []any {
+	return hookGroupsForPolicySelection(exe, event, scope, policy, storeSelection{})
+}
+
+func hookGroupsForPolicySelection(exe, event string, scope hookScope, policy string, selection storeSelection) []any {
 	group := func(matcher string, timeout int) map[string]any {
-		args := []string{"hooks", "run", hookRunArg(event), hooksCommandMarker}
+		args := hookRunArgs(selection, hookRunArg(event))
 		if event == hooksEventUserPrompt && policy != "" {
 			args = append(args, "--packet-policy", policy)
 		}

@@ -237,8 +237,24 @@ Expand-Archive graymatter.zip -DestinationPath .
 <details>
 <summary><strong>MCP client wiring</strong> — Claude Code, Cursor, Codex, OpenCode, Antigravity, and anything else</summary>
 
-`graymatter init` auto-wires every supported client at once. Existing entries
-from other MCP servers are merged, never overwritten.
+`graymatter init` configures every supported client at once. Existing entries
+from other MCP servers and customized GrayMatter entries are preserved.
+
+Normal init preserves an existing GrayMatter MCP entry, including custom
+commands, remote endpoints, disabled settings and environment. To replace one
+deliberately, select it explicitly:
+`graymatter init --only claudecode --replace-mcp`. Invalid config files now
+stop setup before any write; a later
+partial apply returns nonzero while retaining successful actions for retry.
+Scripts that accept a known partial result can opt into `--best-effort`.
+`init --json` reports preparation actions with `runtime_verified:false`; it
+does not certify a live client's setup. On Windows, interactive init asks
+separately before changing user PATH, defaults to No, and honors `--no-path`.
+Windows may reject edits to existing setup files with `unsupported_metadata`
+when the audit SACL cannot be read; it leaves those files untouched. This also
+applies to existing instructions during normal init. Edit that file manually,
+use `--skip-instructions` to omit it, or run with permission to read its audit
+SACL.
 
 | Client | Config file | Scope |
 |--------|-------------|-------|

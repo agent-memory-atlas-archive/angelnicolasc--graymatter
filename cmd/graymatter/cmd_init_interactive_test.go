@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -322,6 +323,15 @@ func TestInteractive_InstructionFilePreservesUserContent(t *testing.T) {
 	}
 
 	err := runInteractiveWizard(filepath.Join(tmpDir, ".graymatter"), tmpDir, true)
+	if runtime.GOOS == "windows" && err != nil {
+		// An ordinary Windows token cannot inspect the audit SACL of this
+		// existing file; setup must preserve it and reject the append.
+		data, readErr := os.ReadFile(filepath.Join(tmpDir, "AGENTS.md"))
+		if readErr != nil || string(data) != userContent {
+			t.Fatalf("rejected append changed user content: %v", readErr)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

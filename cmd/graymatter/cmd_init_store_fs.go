@@ -187,17 +187,21 @@ func prepareStoreDirectoryWithOps(dataDir string, ops storeInitOps) (result stor
 	if err != nil {
 		return result, err
 	}
-	committed := false
-	defer func() {
-		if closeErr := roots.close(ops); closeErr != nil {
-			if committed {
-				closeErr = fmt.Errorf("store prepared; close failed; marker retained: %w", closeErr)
-			}
-			err = errors.Join(err, closeErr)
+	result, err = prepareStoreRootWithOps(roots.data, dataDir, ops)
+	if closeErr := roots.close(ops); closeErr != nil {
+		if result.status == "created" {
+			closeErr = fmt.Errorf("store prepared; close failed; marker retained: %w", closeErr)
 		}
-	}()
+		err = errors.Join(err, closeErr)
+	}
+	return result, err
+}
 
-	initial := inspectStorePreparation(roots.data, ops)
+// prepareStoreRootWithOps is the shared store-only algorithm after a data root
+// has been opened. Init can pass its preflight-held root without reopening a
+// mutable alias, while the public store-only entry point keeps its contract.
+func prepareStoreRootWithOps(dataRoot *os.Root, dataDir string, ops storeInitOps) (result storePreparationResult, err error) {
+	initial := inspectStorePreparation(dataRoot, ops)
 	if initial.marker != "" {
 		return storePreparationResult{status: "already_prepared", marker: initial.marker}, nil
 	}
@@ -205,18 +209,18 @@ func prepareStoreDirectoryWithOps(dataDir string, ops storeInitOps) (result stor
 		return result, fmt.Errorf("data directory is not prepared and cannot be initialized: %w", initial.err)
 	}
 
-	tempName, err := writeStoreInitializationTemp(roots.data, ops)
+	tempName, err := writeStoreInitializationTemp(dataRoot, ops)
 	if err != nil {
 		return result, err
 	}
 	cleanTemp := func(cause error) error {
-		if removeErr := ops.remove(roots.data, tempName); removeErr != nil {
+		if removeErr := ops.remove(dataRoot, tempName); removeErr != nil {
 			return errors.Join(cause, fmt.Errorf("remove initialization temporary file %s in %s: %w", tempName, dataDir, removeErr))
 		}
 		return cause
 	}
 
-	beforeLink := inspectStorePreparation(roots.data, ops)
+	beforeLink := inspectStorePreparation(dataRoot, ops)
 	if beforeLink.marker != "" {
 		return storePreparationResult{status: "already_prepared", marker: beforeLink.marker}, cleanTemp(nil)
 	}
@@ -224,8 +228,8 @@ func prepareStoreDirectoryWithOps(dataDir string, ops storeInitOps) (result stor
 		return result, cleanTemp(fmt.Errorf("data directory changed before initialization publication: %w", beforeLink.err))
 	}
 
-	if linkErr := ops.link(roots.data, tempName, "MEMORY.md"); linkErr != nil {
-		afterLink := inspectStorePreparation(roots.data, ops)
+	if linkErr := ops.link(dataRoot, tempName, "MEMORY.md"); linkErr != nil {
+		afterLink := inspectStorePreparation(dataRoot, ops)
 		if afterLink.marker != "" {
 			return storePreparationResult{status: "already_prepared", marker: afterLink.marker}, cleanTemp(nil)
 		}
@@ -237,7 +241,6 @@ func prepareStoreDirectoryWithOps(dataDir string, ops storeInitOps) (result stor
 			afterLink.err,
 		))
 	}
-	committed = true
 	result = storePreparationResult{status: "created", marker: "MEMORY.md"}
 	if cleanupErr := cleanTemp(nil); cleanupErr != nil {
 		return result, fmt.Errorf("store prepared; cleanup failed; marker retained: %w", cleanupErr)

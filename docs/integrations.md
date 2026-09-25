@@ -13,9 +13,10 @@ every client wants a different shape — and gets it wrong silently:
 
 Two ways to wire a client:
 
-1. **Auto-wired** — `graymatter init` writes and maintains the config for
-   you (merge-never-overwrite, idempotent, `.bak` on rewrite). Re-run
-   `graymatter init` after upgrading.
+1. **Auto-wired** — `graymatter init` adds missing GrayMatter entries and
+   preserves existing customized entries and other servers. Re-run it after
+   upgrading. Use `--only CLIENT --replace-mcp` to replace only a selected
+   GrayMatter entry; no secret-bearing backup is written automatically.
 2. **Manual** — copy the snippet below into the client's config file.
 
 `graymatter init --global` still runs the normal auto-wiring in the current
@@ -25,6 +26,31 @@ MCP configs into global ones. A repository still needs its own client wiring
 when the client uses project-scoped MCP config; an existing user-scoped Claude
 MCP registration can be reused across repositories. Codex's config is already
 home-scoped.
+
+An explicit `--dir`, including `--dir .graymatter`, persists the selected
+absolute store path in newly installed MCP and hook commands. With `--dir`
+omitted, they continue to resolve the current project's store dynamically.
+Codex's home-scoped config with an explicit directory therefore points every
+project using that entry at one fixed store. Existing customized entries are
+preserved and their runtime routing is not verified by init.
+
+Setup validates all selected files before any write. A malformed file now
+fails the command without preparing the store or other clients. A later apply
+failure leaves successful earlier actions in place and returns nonzero by
+default. `--best-effort` permits exit 0 only for a known partial apply; rerun
+after fixing the failure. `init --json` gives a versioned action report, with
+`runtime_verified:false`. The interactive Windows wizard asks separately
+before changing user PATH and defaults to No; `--no-path` always prevents it.
+On Windows, changing any existing setup file (MCP config, instructions or hook
+settings) requires readable audit SACL metadata. Ordinary user tokens often
+cannot read it, so setup returns `unsupported_metadata` during preflight before
+any write. Newly created files and preserved entries are unaffected. Edit the
+existing file manually, or run with permission to read its audit SACL, when
+that metadata is unavailable. If only an existing instructions file is
+blocked, `--skip-instructions` can omit that action.
+During an explicit replacement, keep other editors of that file and its
+parent directory's ACL idle. The file guard detects competing GrayMatter
+initializations, but cannot make external edits atomic with the final rename.
 
 For Claude Code, register the MCP server once at user scope if it is not
 already registered:

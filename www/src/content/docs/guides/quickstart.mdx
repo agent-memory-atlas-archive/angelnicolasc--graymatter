@@ -47,7 +47,15 @@ your editor — done.
      ```
      This creates `.graymatter/`, writes the MCP config for each detected
      client, and adds a memory block to CLAUDE.md / AGENTS.md. Existing MCP
-     entries from other servers are merged, never overwritten.
+     entries from other servers and customized GrayMatter entries are preserved.
+
+     To replace one GrayMatter entry, run
+     `graymatter init --only claudecode --replace-mcp` with the client you
+     selected. Invalid files fail before setup writes anything; a later partial
+     apply returns nonzero and can be retried. `--best-effort` permits a known
+     partial result when a script explicitly accepts one. `init --json` reports
+     preparation, not live client readiness. On Windows, interactive init asks
+     separately before updating user PATH; `--no-path` prevents the update.
 
      `graymatter init --global` still performs this setup for the current
      project. It additionally installs home-scoped agent instructions; it does

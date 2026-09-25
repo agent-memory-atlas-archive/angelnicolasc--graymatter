@@ -27,7 +27,7 @@ func addExeDirToUserPath() (bool, error) {
 	}
 	defer k.Close()
 
-	current, _, err := k.GetStringValue("Path")
+	current, kind, err := k.GetStringValue("Path")
 	if err != nil && err != registry.ErrNotExist {
 		return false, err
 	}
@@ -42,7 +42,12 @@ func addExeDirToUserPath() (bool, error) {
 	if strings.TrimSpace(current) != "" {
 		updated = current + ";" + exeDir
 	}
-	if err := k.SetStringValue("Path", updated); err != nil {
+	if kind == registry.EXPAND_SZ {
+		err = k.SetExpandStringValue("Path", updated)
+	} else {
+		err = k.SetStringValue("Path", updated)
+	}
+	if err != nil {
 		return false, err
 	}
 
@@ -55,8 +60,8 @@ func broadcastEnvironmentChange() {
 	sendMsg := user32.NewProc("SendMessageTimeoutW")
 	env, _ := syscall.UTF16PtrFromString("Environment")
 	sendMsg.Call(
-		uintptr(0xFFFF),        // HWND_BROADCAST
-		uintptr(0x001A),        // WM_SETTINGCHANGE
+		uintptr(0xFFFF), // HWND_BROADCAST
+		uintptr(0x001A), // WM_SETTINGCHANGE
 		0,
 		uintptr(unsafe.Pointer(env)),
 		0x0002, // SMTO_ABORTIFHUNG
