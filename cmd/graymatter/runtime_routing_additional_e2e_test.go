@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -346,6 +347,128 @@ func TestRuntimeUnsafeDatabaseWithoutMarkerAcrossTransports(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// E10: every installed hook event must reject an unsafe database leaf before
+// opening a store, with or without a marker, in eager and guarded modes and
+// with direct or daemon-backed execution selected. All paths stay in this
+// fixture; a real symlink target is a canary for external writes.
+func TestRuntimeUnsafeDatabaseHooksAllEventsAndModes(t *testing.T) {
+	f := newIssue81Fixture(t)
+	events := []struct {
+		cli  string
+		wire string
+	}{
+		{"session-start", "SessionStart"},
+		{"user-prompt", "UserPromptSubmit"},
+		{"pre-compact", "PreCompact"},
+		{"session-end", "SessionEnd"},
+	}
+	for _, leafKind := range []string{"symlink", "directory"} {
+		for _, hasMarker := range []bool{false, true} {
+			markerName := "without-marker"
+			if hasMarker {
+				markerName = "with-marker"
+			}
+			t.Run(leafKind+"/"+markerName, func(t *testing.T) {
+				project := filepath.Join(f.root, "hook-matrix-"+leafKind+"-"+markerName)
+				store := filepath.Join(project, ".graymatter")
+				t.Cleanup(func() { _ = f.run(project, "", "--dir", store, "daemon", "stop") })
+				if err := os.MkdirAll(store, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				db := filepath.Join(store, "gray.db")
+				var target string
+				var canary issue81Snapshot
+				if leafKind == "symlink" {
+					target = filepath.Join(f.root, "hook-matrix-external-"+markerName)
+					if err := os.WriteFile(target, []byte("external database must remain intact"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(target, db); err != nil {
+						if runtime.GOOS == "windows" {
+							t.Skipf("file symlink unavailable; real leaf integration coverage omitted: %v", err)
+						}
+						t.Fatal(err)
+					}
+					canary = issue81SnapshotFile(t, target)
+				} else if err := os.Mkdir(db, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				var markerSnapshot issue81Snapshot
+				marker := filepath.Join(store, "MEMORY.md")
+				if hasMarker {
+					if err := os.WriteFile(marker, []byte("prepared marker must remain intact"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					markerSnapshot = issue81SnapshotFile(t, marker)
+				}
+				for _, event := range events {
+					payload := map[string]string{
+						"cwd": project, "session_id": "unsafe-db-hook-matrix", "hook_event_name": event.wire,
+					}
+					switch event.cli {
+					case "session-start":
+						payload["source"] = "startup"
+					case "user-prompt":
+						payload["prompt"] = "remember: this must never reach an external database"
+					}
+					packet, err := json.Marshal(payload)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, execution := range []struct {
+						name     string
+						noDaemon bool
+					}{{"direct", true}, {"daemon", false}} {
+						for _, guard := range []struct {
+							name     string
+							noCreate bool
+						}{{"eager", false}, {"no-create", true}} {
+							t.Run(event.cli+"/"+execution.name+"/"+guard.name, func(t *testing.T) {
+								args := []string{"hooks", "run", event.cli}
+								if execution.noDaemon {
+									args = append([]string{"--no-daemon"}, args...)
+								}
+								if guard.noCreate {
+									args = append(args, "--no-create")
+								}
+								out := f.run(project, string(packet), args...)
+								if out.code != 0 || out.stdout != "" || !strings.Contains(out.stderr, "invalid store entry") {
+									t.Fatalf("unsafe %s DB accepted by hook %q: %+v", leafKind, args, out)
+								}
+								if target != "" {
+									issue81AssertFileUnchanged(t, target, canary)
+								}
+								if hasMarker {
+									issue81AssertFileUnchanged(t, marker, markerSnapshot)
+								} else if _, err := os.Lstat(marker); !errors.Is(err, os.ErrNotExist) {
+									t.Fatalf("rejected hook created marker: %v", err)
+								}
+								for _, leaf := range []string{"hooks.log", "daemon.log", "graymatter.http-token", "graymatter.pid", "graymatter.addr"} {
+									if _, err := os.Lstat(filepath.Join(store, leaf)); !errors.Is(err, os.ErrNotExist) {
+										t.Fatalf("rejected hook created %s: %v", leaf, err)
+									}
+								}
+							})
+						}
+					}
+				}
+				if leafKind == "symlink" {
+					got, err := os.Readlink(db)
+					if err != nil || got != target {
+						t.Fatalf("rejected hook replaced DB alias: target=%q err=%v", got, err)
+					}
+				} else if entries, err := os.ReadDir(db); err != nil || len(entries) != 0 {
+					t.Fatalf("rejected hook modified DB directory: entries=%v err=%v", entries, err)
+				}
+				status := f.run(project, "", "daemon", "status")
+				if status.code != 0 || !strings.Contains(status.stdout, "daemon: not running") {
+					t.Fatalf("rejected hook left a daemon running: %+v", status)
+				}
+			})
+		}
 	}
 }
 

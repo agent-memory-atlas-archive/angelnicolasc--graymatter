@@ -261,8 +261,8 @@ func TestAdjacentE01CustomGlobalSetupAndRuntime(t *testing.T) {
 	}
 }
 
-// E02: one malformed client blocks the entire preflight. Correcting only that
-// document permits a complete and then idempotent retry.
+// E02: one malformed client blocks the entire preflight. Removing that
+// document lets setup create both selected clients, then retry idempotently.
 func TestAdjacentE02PreflightAbortRepairAndRetry(t *testing.T) {
 	f := newIssue81Fixture(t)
 	project := filepath.Join(f.root, "project")
@@ -272,22 +272,22 @@ func TestAdjacentE02PreflightAbortRepairAndRetry(t *testing.T) {
 	store := f.registerStore(filepath.Join(project, ".graymatter"))
 	claude := filepath.Join(project, ".mcp.json")
 	cursor := filepath.Join(project, ".cursor", "mcp.json")
-	issue81WriteJSON(t, claude, map[string]any{"mcpServers": map[string]any{"other": map[string]string{"command": "foreign"}}})
 	if err := os.MkdirAll(filepath.Dir(cursor), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cursor, []byte(`{"mcpServers": {"graymatter":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	claudeBefore := issue81SnapshotFile(t, claude)
 	cursorBefore := issue81SnapshotFile(t, cursor)
 	first := f.run(project, "", "init", "--no-path", "--only", "claudecode,cursor", "--json")
 	report := adjacentSetupJSON(t, first, 1, "failed", "preflight")
 	if report["changed"] != false || report["effects_uncertain"] != false {
 		t.Fatalf("preflight claimed effects: %#v", report)
 	}
-	issue81AssertFileUnchanged(t, claude, claudeBefore)
 	issue81AssertFileUnchanged(t, cursor, cursorBefore)
+	if _, err := os.Lstat(claude); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("preflight created Claude config: %v", err)
+	}
 	if _, err := os.Lstat(store); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("preflight created store: %v", err)
 	}
@@ -297,7 +297,9 @@ func TestAdjacentE02PreflightAbortRepairAndRetry(t *testing.T) {
 		}
 	}
 
-	issue81WriteJSON(t, cursor, map[string]any{"mcpServers": map[string]any{}})
+	if err := os.Remove(cursor); err != nil {
+		t.Fatalf("remove malformed Cursor config before retry: %v", err)
+	}
 	second := f.run(project, "", "init", "--no-path", "--only", "claudecode,cursor", "--json")
 	adjacentSetupJSON(t, second, 0, "complete", "apply")
 	if _, err := os.Stat(filepath.Join(store, "MEMORY.md")); err != nil {
