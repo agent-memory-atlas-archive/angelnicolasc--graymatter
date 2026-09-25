@@ -157,8 +157,15 @@ go install github.com/angelnicolasc/graymatter/cmd/graymatter@latest
 graymatter demo              # a working store with 3 agents, then the TUI opens
 graymatter init              # wire YOUR project: MCP config + memory block
 graymatter init --hooks      # Claude Code: memory injected every turn
-graymatter doctor            # verify everything
+graymatter doctor            # read-only observations of local setup artifacts
 ```
+
+Standard `doctor` does not write a probe, start a daemon, execute a binary on
+PATH, or test whether the data directory is writable. Its config checks find
+references in files; they do not prove which settings a client loaded. In JSON,
+`ok` means no check failed, while `readiness: not_evaluated` keeps readiness
+separate from the observations. The `--health`, `--graph`, `--audit`, and
+`--embeddings` modes have separate contracts; graph rendering can write HTML.
 
 `graymatter init --global` still performs that normal setup in the current
 directory. It additionally installs the managed memory instructions in Claude
@@ -385,7 +392,7 @@ graymatter pin "agent" "fact"        # exempt from decay/pruning (ADR-010)
 graymatter unpin "agent" "fact"      # restore normal decay
 graymatter tui                       # 4-view terminal UI
 graymatter status                    # facts, recalls, KG state
-graymatter doctor                    # full setup check
+graymatter doctor                    # read-only setup observations; readiness not evaluated
 graymatter doctor --graph --html     # KG analytics + visual render
 graymatter doctor --health           # store health audit
 graymatter doctor --audit [path]     # audit any instruction file

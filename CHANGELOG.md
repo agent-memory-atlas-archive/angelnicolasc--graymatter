@@ -20,6 +20,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Standard `graymatter doctor` no longer writes or removes a fixed-name probe.** Setup diagnostics open `gray.db` read-only with a private inert vector backend, never run the executable found on PATH, and report incomplete store or graph observations instead of presenting them as empty. The additive JSON fields `status`, `diagnostic_mode`, `readiness`, and `data_dir_writability` distinguish observed checks from client readiness. Existing `ok` and check fields remain. A missing data directory still exits successfully with a warning; filesystem and database failures are surfaced. The special doctor modes keep their separate runtime or output-file contracts.
+
 - **The CLI now requires `golang.org/x/text v0.39.0`, which fixes [GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970).** This dependency update applies independently of the selected hook policy; lexical selection also rejects malformed UTF-8 before normalization. The module graph advances `golang.org/x/sync` to v0.21.0 without raising the CLI's minimum Go version.
 
 ### Notes

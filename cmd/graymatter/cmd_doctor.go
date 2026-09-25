@@ -1,10 +1,11 @@
 package main
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,21 +14,83 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/daemon"
-	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/kg"
-	"github.com/angelnicolasc/graymatter/pkg/memory"
 )
 
-// doctor: end-to-end setup verification. Closes the issue #3 failure mode
-// ("MCP connected but nothing ever gets written") by checking every link of
-// the chain: binary → data dir → store → MCP wiring → agent instructions.
+// The default doctor command observes setup artifacts without opening a
+// writable runtime. It cannot determine a client's effective configuration.
 
 type checkResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"` // ok | info | warn | fail
 	Detail string `json:"detail"`
 	Hint   string `json:"hint,omitempty"`
+}
+
+type doctorSetupReport struct {
+	DataDir            string        `json:"data_dir"`
+	OK                 bool          `json:"ok"`
+	Status             string        `json:"status"`
+	DiagnosticMode     string        `json:"diagnostic_mode"`
+	Readiness          string        `json:"readiness"`
+	DataDirWritability string        `json:"data_dir_writability"`
+	Checks             []checkResult `json:"checks"`
+}
+
+var errDoctorChecksFailed = errors.New("doctor: diagnostic checks failed")
+
+func newDoctorSetupReport(dir string, checks []checkResult) doctorSetupReport {
+	status := "ok"
+	for _, c := range checks {
+		if c.Status == "fail" {
+			status = "fail"
+			break
+		}
+		if c.Status == "warn" {
+			status = "warn"
+		}
+	}
+	return doctorSetupReport{
+		DataDir: dir, OK: status != "fail", Status: status,
+		DiagnosticMode: "read_only", Readiness: "not_evaluated",
+		DataDirWritability: "not_tested", Checks: append([]checkResult{}, checks...),
+	}
+}
+
+var doctorEncodeSetupJSON = func(w io.Writer, report doctorSetupReport) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
+}
+
+func writeDoctorSetupReport(w io.Writer, report doctorSetupReport, jsonOutput bool) error {
+	var out bytes.Buffer
+	if jsonOutput {
+		if err := doctorEncodeSetupJSON(&out, report); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(&out, "GrayMatter doctor — data dir %q (read-only setup observations)\n\n", report.DataDir)
+		for _, c := range report.Checks {
+			glyph := map[string]string{"ok": "✓", "info": "·", "warn": "!", "fail": "✗"}[c.Status]
+			fmt.Fprintf(&out, "  %s %-14s %s\n", glyph, c.Name, c.Detail)
+			if c.Hint != "" {
+				fmt.Fprintf(&out, "    → %s\n", c.Hint)
+			}
+		}
+		fmt.Fprintf(&out, "\n  status: %s · readiness: not evaluated · data directory writability: not tested\n", report.Status)
+		fmt.Fprintln(&out, "  These observations do not verify a client's effective MCP configuration or that memory is ready for use.")
+	}
+	n, err := w.Write(out.Bytes())
+	if err != nil {
+		return err
+	}
+	if n != out.Len() {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func doctorCmd() *cobra.Command {
@@ -40,17 +103,19 @@ func doctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor [path]",
 		Short: "Diagnose the GrayMatter setup in this directory",
-		Long: `Checks every link in the chain that makes agent memory work:
+		Long: `Observes local setup artifacts without changing persistent state:
 
-  1. graymatter binary reachable on PATH
-  2. data directory exists and is writable
-  3. store opens; fact/agent counts; lock state (single-writer detection)
-  4. MCP server wired into at least one client config
-  5. CLAUDE.md / AGENTS.md tell the model to use the memory tools
-  6. configured prompt-packet policies in project and global settings.json
+  1. this binary and the graymatter executable found on PATH
+  2. data directory exists (writability is not tested)
+  3. read-only store observations, if available
+  4. references to graymatter in local client config files
+  5. memory instructions observed in CLAUDE.md / AGENTS.md
+  6. prompt-packet policy entries in project and global settings.json
 
-Packet-policy checks describe those files, not the host's effective settings
-precedence. Missing hooks are informational; no settings are changed.
+This mode does not verify client trust, effective settings precedence, argv/env,
+or readiness. Config references are substring observations, not proof that a
+client loads them. It does not test data directory writability. With an already
+running daemon it makes read-only RPCs; it never starts one.
 
 With --audit, skips the setup checks and instead audits the instruction
 documents themselves: approx token cost per prompt (tokenizer declared in
@@ -58,8 +123,9 @@ the output), near-duplicate paragraphs, staleness by git blame, size
 alerts at declared thresholds, and structural conflicts in managed
 blocks. Works on any project — no .graymatter directory required.
 
-With --health, audits the store itself instead of the setup: supersede
-loops, dumping bursts, critical facts near prune (pin suggestions), and
+Other modes have separate contracts. With --health, audits the store itself
+instead of the setup: supersede loops, dumping bursts, critical facts near
+prune (pin suggestions), and
 duplicate density. Deterministic — the same store always produces the same
 report, because rules read only store contents and never the wall clock.
 Exit code is 1 only when a finding is a failure; warnings exit 0.
@@ -68,7 +134,11 @@ With --embeddings, audits the vector channel as the store observed it:
 how many live facts carry a vector, how many writes degraded to
 keyword-only because the embedder failed, the last failure's message,
 and the vector retry backlog. Deterministic like --health, and it works
-even when the daemon is down (read-only probe of gray.db).`,
+even when the daemon is down by opening the store directly.
+
+With --graph, computes graph analytics and can write an HTML render. --health,
+--graph, --audit and --embeddings do not inherit the setup mode's read-only
+guarantee; hooks doctor is also a separate command.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if graphMode {
@@ -95,6 +165,7 @@ even when the daemon is down (read-only probe of gray.db).`,
 			if len(args) > 0 {
 				return fmt.Errorf("unexpected argument %q: a path requires --audit", args[0])
 			}
+			cmd.SilenceErrors, cmd.SilenceUsage = true, true
 
 			checks := []checkResult{
 				checkVersion(),
@@ -109,62 +180,21 @@ even when the daemon is down (read-only probe of gray.db).`,
 			}
 			checks = append(checks, checkHookPacketPolicies()...)
 
-			if jsonOut {
-				ok := true
-				for _, c := range checks {
-					if c.Status == "fail" {
-						ok = false
-					}
-				}
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				if err := enc.Encode(map[string]any{
-					"data_dir": dataDir,
-					"ok":       ok,
-					"checks":   checks,
-				}); err != nil {
-					return err
-				}
-				if !ok {
-					os.Exit(1)
-				}
-				return nil
+			report := newDoctorSetupReport(dataDir, checks)
+			if err := writeDoctorSetupReport(cmd.OutOrStdout(), report, jsonOut); err != nil {
+				return fmt.Errorf("write doctor report: %w", err)
 			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "GrayMatter doctor — data dir %q\n\n", dataDir)
-			var fails, warns int
-			for _, c := range checks {
-				glyph := map[string]string{"ok": "✓", "info": "·", "warn": "!", "fail": "✗"}[c.Status]
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s %-14s %s\n", glyph, c.Name, c.Detail)
-				if c.Hint != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "    → %s\n", c.Hint)
-				}
-				switch c.Status {
-				case "fail":
-					fails++
-				case "warn":
-					warns++
-				}
-			}
-
-			fmt.Fprintln(cmd.OutOrStdout())
-			switch {
-			case fails > 0:
-				fmt.Fprintf(cmd.OutOrStdout(), "%d check(s) failed.\n", fails)
-				os.Exit(1)
-			case warns > 0:
-				fmt.Fprintf(cmd.OutOrStdout(), "%d warning(s) — memory may not be used by your agent. See hints above.\n", warns)
-			default:
-				fmt.Fprintln(cmd.OutOrStdout(), "Everything looks good.")
+			if !report.OK {
+				return errDoctorChecksFailed
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&audit, "audit", false, "audit instruction documents (tokens, duplicates, staleness, markers) instead of setup checks")
-	cmd.Flags().BoolVar(&graphMode, "graph", false, "report knowledge-graph analytics (hubs, orphans, articulation points)")
+	cmd.Flags().BoolVar(&graphMode, "graph", false, "separate runtime graph analysis; with --html, can write an HTML render")
 	cmd.Flags().String("html", "kg-graph.html", "with --graph: also write the self-contained HTML graph render to this file")
-	cmd.Flags().BoolVar(&health, "health", false, "audit store health: supersede loops, dumping bursts, near-prune criticals, duplicates")
-	cmd.Flags().BoolVar(&embeddings, "embeddings", false, "audit the vector channel as the store observed it: coverage, degraded writes, retry backlog")
+	cmd.Flags().BoolVar(&health, "health", false, "separate runtime store audit: supersede loops, dumping bursts, near-prune criticals, duplicates")
+	cmd.Flags().BoolVar(&embeddings, "embeddings", false, "separate vector-channel audit: coverage, degraded writes, retry backlog")
 	return cmd
 }
 
@@ -211,32 +241,28 @@ func checkGlobalHooks() checkResult {
 	return c
 }
 
-// checkVersion reports what this binary is, and whether the binary an MCP
-// client would actually launch is the same one.
-//
-// The second half is the part that matters. MCP clients start `graymatter` by
-// name, so the process your agent talks to is whatever PATH resolves to — not
-// necessarily the build you just ran doctor from. When those differ, every
-// check below describes a binary the agent never loads.
+// checkVersion compares file identity without executing the PATH candidate.
+// A distinct candidate may have any version; this check cannot inspect it.
+var doctorLookPath = exec.LookPath
+
 func checkVersion() checkResult {
 	c := checkResult{Name: "version", Status: "ok", Detail: version + " (this binary)"}
 
-	path, err := exec.LookPath("graymatter")
+	path, err := doctorLookPath("graymatter")
 	if err != nil {
 		return c
 	}
 	self, err := os.Executable()
-	if err != nil || sameBinary(self, path) {
+	if err != nil {
+		c.Status, c.Detail = "warn", "could not identify this executable: "+err.Error()
 		return c
 	}
-	other := binaryVersion(path)
-	if other == "" || other == version {
+	if sameBinary(self, path) {
 		return c
 	}
-
 	c.Status = "warn"
-	c.Detail = fmt.Sprintf("%s (this binary), but %s reports %s", version, path, other)
-	c.Hint = "your MCP client launches the one on PATH, so that is the version your agent is using; reinstall or move the intended build onto PATH"
+	c.Detail = fmt.Sprintf("%s (this binary); %s is a different executable (version not checked)", version, path)
+	c.Hint = "review which executable your MCP client references; doctor does not run the PATH candidate or verify client argv/env"
 	return c
 }
 
@@ -253,64 +279,46 @@ func sameBinary(a, b string) bool {
 	return os.SameFile(ai, bi)
 }
 
-// binaryVersion asks another graymatter build what it is. Best-effort by
-// design: a doctor check must never hang or fail because a stray binary on
-// PATH misbehaves, so every error path returns "" and the check stays quiet.
-func binaryVersion(path string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, path, "--version").Output()
-	if err != nil {
-		return ""
-	}
-	// cobra prints "graymatter version x.y.z".
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) == 0 {
-		return ""
-	}
-	return fields[len(fields)-1]
-}
-
 func checkBinaryOnPath() checkResult {
 	c := checkResult{Name: "binary"}
-	path, err := exec.LookPath("graymatter")
+	path, err := doctorLookPath("graymatter")
 	switch {
 	case err == nil:
 		c.Status, c.Detail = "ok", "graymatter on PATH ("+path+")"
 	case errors.Is(err, exec.ErrDot):
 		c.Status = "warn"
 		c.Detail = "graymatter found only in the current directory, not on PATH"
-		c.Hint = "MCP clients launch `graymatter` by name — move the binary onto PATH or re-run `graymatter init` (Windows: it registers the directory for you)"
+		c.Hint = "MCP configurations that launch `graymatter` by name need it on PATH; move the binary there or inspect the client's configured command"
 	default:
 		c.Status = "warn"
 		c.Detail = "graymatter is not on PATH"
-		c.Hint = "MCP clients launch `graymatter` by name; install with `go install github.com/angelnicolasc/graymatter/cmd/graymatter@latest` or move the binary into a PATH directory"
+		c.Hint = "MCP configurations that launch `graymatter` by name need it on PATH; install with `go install github.com/angelnicolasc/graymatter/cmd/graymatter@latest` or use an absolute command path"
 	}
 	return c
 }
 
+var doctorDataDirStat = os.Stat
+var doctorKGMarkerStat = os.Stat
+
 func checkDataDir(dir string) checkResult {
 	c := checkResult{Name: "data dir"}
-	info, err := os.Stat(dir)
+	info, err := doctorDataDirStat(dir)
 	if err != nil {
-		c.Status = "warn"
-		c.Detail = fmt.Sprintf("%s does not exist", dir)
-		c.Hint = "run `graymatter init` to initialise this project"
+		if errors.Is(err, os.ErrNotExist) {
+			c.Status = "warn"
+			c.Detail = fmt.Sprintf("%s does not exist", dir)
+			c.Hint = "run `graymatter init --store-only` to prepare this project's store directory"
+		} else {
+			c.Status = "fail"
+			c.Detail = fmt.Sprintf("cannot inspect %s: %v", dir, err)
+		}
 		return c
 	}
 	if !info.IsDir() {
 		c.Status, c.Detail = "fail", dir+" exists but is not a directory"
 		return c
 	}
-	probe := filepath.Join(dir, ".doctor_probe")
-	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		c.Status = "fail"
-		c.Detail = fmt.Sprintf("%s is not writable: %v", dir, err)
-		return c
-	}
-	_ = os.Remove(probe)
-	c.Status, c.Detail = "ok", dir+" exists and is writable"
+	c.Status, c.Detail = "ok", dir+" exists (writability not tested)"
 	return c
 }
 
@@ -367,84 +375,7 @@ func flagIfUnused(c checkResult, dir string, facts int) checkResult {
 }
 
 func checkStore(dir string) checkResult {
-	c := checkResult{Name: "store"}
-	dbPath := filepath.Join(dir, "gray.db")
-	if _, err := os.Stat(dbPath); err != nil {
-		c.Status, c.Detail = "info", "no database yet (gray.db is created on first write)"
-		// Anyone reading this line right after `init` is one step from the most
-		// common false alarm: the client has not been restarted, so the tools
-		// are not loaded yet and nothing has had a chance to write. The hint
-		// disappears as soon as a single fact exists.
-		c.Hint = "if your agent cannot see the memory tools, restart your MCP client; clients launch their servers at startup, so a session that predates `graymatter init` never picks them up"
-		return flagIfUnused(c, dir, 0)
-	}
-
-	// Preferred path: ask the daemon, which owns the store in normal
-	// operation. This is also what proves the daemon is healthy end to end.
-	if dc, err := daemon.ConnectNoSpawn(dir); err == nil {
-		defer func() { _ = dc.Close() }()
-		agents, err := dc.ListAgents()
-		if err != nil {
-			c.Status, c.Detail = "fail", fmt.Sprintf("daemon up but listing agents failed: %v", err)
-			return c
-		}
-		facts := 0
-		for _, a := range agents {
-			if st, err := dc.Stats(a); err == nil {
-				facts += st.FactCount
-			}
-		}
-		pending, _ := dc.PendingVectorCount()
-		c.Status = "ok"
-		c.Detail = fmt.Sprintf("served by daemon — %d fact(s) across %d agent(s)", facts, len(agents))
-		if ov, err := dc.StoreOverview(); err == nil {
-			c.Detail += fmt.Sprintf(" · consolidations %d (facts consolidated %d)", ov.Consolidations, ov.FactsConsumed)
-		}
-		if pending > 0 {
-			c.Status = "warn"
-			c.Detail += fmt.Sprintf(", %d pending vector write(s)", pending)
-			c.Hint = "pending vectors in a quiescent system mean the embedding backend is failing — check your embedding configuration (Ollama URL / API keys)"
-		}
-		return flagIfUnused(c, dir, facts)
-	}
-
-	// No daemon: read-only probe. Lock contention here means some non-daemon
-	// process (e.g. a Go program embedding the library, or a stale daemon)
-	// holds the write lock.
-	store, err := memory.Open(memory.StoreConfig{DataDir: dir, ReadOnly: true})
-	if err != nil {
-		if strings.Contains(err.Error(), "locked") || strings.Contains(err.Error(), "timeout") {
-			c.Status = "warn"
-			c.Detail = "gray.db is held by a non-daemon process (bbolt is single-writer)"
-			c.Hint = "another program is holding the store directly — a Go app embedding the library, or `graymatter ... --no-daemon`; close it and clients will start their own daemon" + lsofHint(dbPath)
-			return c
-		}
-		c.Status, c.Detail = "fail", fmt.Sprintf("store failed to open: %v", err)
-		return c
-	}
-	defer func() { _ = store.Close() }()
-
-	agents, err := store.ListAgents()
-	if err != nil {
-		c.Status, c.Detail = "fail", fmt.Sprintf("store opened but listing agents failed: %v", err)
-		return c
-	}
-	facts := 0
-	for _, a := range agents {
-		if st, err := store.Stats(a); err == nil {
-			facts += st.FactCount
-		}
-	}
-	pending := store.PendingVectorCount()
-	cycles, consumed := store.ConsolidationCounters()
-	c.Status = "ok"
-	c.Detail = fmt.Sprintf("no daemon running — %d fact(s) across %d agent(s) (direct read) · consolidations %d (facts consolidated %d)", facts, len(agents), cycles, consumed)
-	if pending > 0 {
-		c.Status = "warn"
-		c.Detail += fmt.Sprintf(", %d pending vector write(s)", pending)
-		c.Hint = "pending vectors in a quiescent system mean the embedding backend is failing — check your embedding configuration (Ollama URL / API keys)"
-	}
-	return flagIfUnused(c, dir, facts)
+	return checkStoreReadOnly(dir)
 }
 
 // checkKG reports knowledge-graph auto-population state and graph size.
@@ -459,14 +390,16 @@ func checkStore(dir string) checkResult {
 func checkKG(dir string) checkResult {
 	c := checkResult{Name: "knowledge graph"}
 	auto := os.Getenv("GRAYMATTER_KG") == "1"
-	if _, err := os.Stat(daemon.KGSentinelPath(dir)); err == nil {
+	if _, err := doctorKGMarkerStat(daemon.KGSentinelPath(dir)); err == nil {
 		auto = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		c.Status, c.Detail = "fail", fmt.Sprintf("cannot inspect graph activation marker: %v", err)
+		return c
 	}
 
 	nodes, edges, countErr := countGraphReadOnly(dir)
 	switch {
-	case countErr != nil:
-		// No db yet: same fresh-install regime as the store check.
+	case errors.Is(countErr, errDoctorNoDatabase):
 		c.Status, c.Detail = "info", "no database yet; the graph starts empty"
 		if auto {
 			c.Detail = "auto-population on; the graph starts empty"
@@ -474,15 +407,21 @@ func checkKG(dir string) checkResult {
 		} else {
 			c.Hint = "optional: graymatter init --kg extracts entities and co-mention edges during consolidation"
 		}
+	case errors.Is(countErr, errDoctorUninspected):
+		c.Status, c.Detail = "warn", "gray.db is a symbolic link; graph not inspected"
+	case errors.Is(countErr, errDoctorIncomplete), errors.Is(countErr, bolt.ErrTimeout):
+		c.Status, c.Detail = "warn", fmt.Sprintf("graph diagnostics incomplete: %v", countErr)
+	case countErr != nil:
+		c.Status, c.Detail = "fail", fmt.Sprintf("graph inspection failed: %v", countErr)
 	case !auto && nodes == 0 && edges == 0:
-		c.Status, c.Detail = "info", fmt.Sprintf("off — %d nodes / %d edges", nodes, edges)
+		c.Status, c.Detail = "info", fmt.Sprintf("off — observed %d nodes / %d edges", nodes, edges)
 		c.Hint = "optional: graymatter init --kg extracts entities and co-mention edges during consolidation; explicit links via memory_reflect action=link work regardless"
 	case auto && nodes == 0:
-		c.Status, c.Detail = "info", fmt.Sprintf("auto-population on — graph empty until consolidation (%d nodes / %d edges)", nodes, edges)
+		c.Status, c.Detail = "info", fmt.Sprintf("auto-population on — graph observed empty until consolidation (%d nodes / %d edges)", nodes, edges)
 		c.Hint = "first entities appear after ~20 facts, when consolidation first runs"
 	default:
 		c.Status = "ok"
-		detail := fmt.Sprintf("%d nodes / %d edges", nodes, edges)
+		detail := fmt.Sprintf("observed %d nodes / %d edges", nodes, edges)
 		if auto {
 			detail = "auto-population active — " + detail
 		} else {
@@ -493,43 +432,9 @@ func checkKG(dir string) checkResult {
 	return c
 }
 
-// countGraphReadOnly reads node/edge counts without touching the daemon:
-// through its RPC when one is up, else a read-only bbolt open. A missing
-// gray.db reports as (0, 0, nil) so callers treat it as "empty", not error.
+// countGraphReadOnly reads graph size without starting a runtime.
 func countGraphReadOnly(dir string) (nodes, edges int, err error) {
-	if dc, derr := daemon.ConnectNoSpawn(dir); derr == nil {
-		defer func() { _ = dc.Close() }()
-		state, serr := dc.KGState()
-		if serr != nil {
-			return 0, 0, serr
-		}
-		return state.Nodes, state.Edges, nil
-	}
-	dbPath := filepath.Join(dir, "gray.db")
-	if _, statErr := os.Stat(dbPath); statErr != nil {
-		return 0, 0, nil //nolint:nilerr // no database yet is emptiness, not failure
-	}
-	store, oerr := memory.Open(memory.StoreConfig{DataDir: dir, ReadOnly: true})
-	if oerr != nil {
-		return 0, 0, oerr
-	}
-	defer func() { _ = store.Close() }()
-	g, gerr := kg.OpenRead(store.DB())
-	if errors.Is(gerr, kg.ErrNoGraph) {
-		return 0, 0, nil // the store never had a graph: empty, not failure
-	}
-	if gerr != nil {
-		return 0, 0, gerr
-	}
-	ns, nerr := g.AllNodes()
-	if nerr != nil {
-		return 0, 0, nerr
-	}
-	es, eerr := g.AllEdges()
-	if eerr != nil {
-		return 0, 0, eerr
-	}
-	return len(ns), len(es), nil
+	return doctorGraphCounts(dir)
 }
 
 // wiredAgents returns the known agents whose MCP config in this project
@@ -571,7 +476,7 @@ func checkMCPWiring(projectDir string) checkResult {
 		c.Hint = "run `graymatter init` to wire Claude Code, Cursor, Codex, and OpenCode automatically"
 		return c
 	}
-	c.Status, c.Detail = "ok", strings.Join(wired, ", ")
+	c.Status, c.Detail = "ok", "config references observed: "+strings.Join(wired, ", ")+" (substring check; effective client settings not verified)"
 	return c
 }
 

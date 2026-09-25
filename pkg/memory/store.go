@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -413,7 +414,15 @@ func Open(cfg StoreConfig) (*Store, error) {
 // a descriptive error is returned.
 func openBoltDB(path string, forceRO, strictWrite bool) (db *bolt.DB, isReadOnly bool, err error) {
 	if forceRO && !strictWrite {
-		db, err = bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: boltOpenTimeout})
+		// bbolt adds O_CREATE even to its read-only open. On Windows that can
+		// reject an existing file with the read-only attribute set. Supply an
+		// existing-file opener so forced read-only callers never request create.
+		db, err = bolt.Open(path, 0o600, &bolt.Options{
+			ReadOnly: true, Timeout: boltOpenTimeout,
+			OpenFile: func(name string, _ int, _ os.FileMode) (*os.File, error) {
+				return os.Open(name)
+			},
+		})
 		if err != nil {
 			return nil, false, fmt.Errorf("open bbolt read-only: %w", err)
 		}
