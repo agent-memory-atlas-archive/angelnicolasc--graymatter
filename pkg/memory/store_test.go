@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -405,6 +407,47 @@ func TestOpen_ForceReadOnly(t *testing.T) {
 	}
 	if len(facts) != 1 {
 		t.Errorf("expected 1 fact, got %d", len(facts))
+	}
+}
+
+// A forced read-only open is for an existing database. It must work when the
+// file itself is read-only (including Windows' read-only attribute), and it
+// must not create a missing gray.db as a side effect.
+func TestOpen_ForceReadOnlyOnExistingReadOnlyFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "gray.db")
+	if _, err := Open(StoreConfig{DataDir: dir, ReadOnly: true, VectorBackend: &countingVectorStore{}}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing read-only DB: want not-exist, got %v", err)
+	}
+	if _, err := os.Lstat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only open created missing DB: %v", err)
+	}
+	rw, err := Open(StoreConfig{DataDir: dir, VectorBackend: &countingVectorStore{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.Put(context.Background(), "ro-agent", "persisted fact"); err != nil {
+		_ = rw.Close()
+		t.Fatal(err)
+	}
+	if err := rw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dbPath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dbPath, 0o600) }()
+	ro, err := Open(StoreConfig{DataDir: dir, ReadOnly: true, VectorBackend: &countingVectorStore{}})
+	if err != nil {
+		t.Fatalf("read-only file open: %v", err)
+	}
+	stats, err := ro.Stats("ro-agent")
+	if err != nil || stats.FactCount != 1 {
+		_ = ro.Close()
+		t.Fatalf("read-only file facts: stats=%+v err=%v", stats, err)
+	}
+	if err := ro.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

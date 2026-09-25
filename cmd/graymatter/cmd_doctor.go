@@ -55,16 +55,20 @@ func newDoctorSetupReport(dir string, checks []checkResult) doctorSetupReport {
 	return doctorSetupReport{
 		DataDir: dir, OK: status != "fail", Status: status,
 		DiagnosticMode: "read_only", Readiness: "not_evaluated",
-		DataDirWritability: "not_tested", Checks: checks,
+		DataDirWritability: "not_tested", Checks: append([]checkResult{}, checks...),
 	}
+}
+
+var doctorEncodeSetupJSON = func(w io.Writer, report doctorSetupReport) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
 }
 
 func writeDoctorSetupReport(w io.Writer, report doctorSetupReport, jsonOutput bool) error {
 	var out bytes.Buffer
 	if jsonOutput {
-		enc := json.NewEncoder(&out)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(report); err != nil {
+		if err := doctorEncodeSetupJSON(&out, report); err != nil {
 			return err
 		}
 	} else {
@@ -294,6 +298,7 @@ func checkBinaryOnPath() checkResult {
 }
 
 var doctorDataDirStat = os.Stat
+var doctorKGMarkerStat = os.Stat
 
 func checkDataDir(dir string) checkResult {
 	c := checkResult{Name: "data dir"}
@@ -385,7 +390,7 @@ func checkStore(dir string) checkResult {
 func checkKG(dir string) checkResult {
 	c := checkResult{Name: "knowledge graph"}
 	auto := os.Getenv("GRAYMATTER_KG") == "1"
-	if _, err := os.Stat(daemon.KGSentinelPath(dir)); err == nil {
+	if _, err := doctorKGMarkerStat(daemon.KGSentinelPath(dir)); err == nil {
 		auto = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		c.Status, c.Detail = "fail", fmt.Sprintf("cannot inspect graph activation marker: %v", err)

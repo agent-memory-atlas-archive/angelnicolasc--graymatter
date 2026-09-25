@@ -237,6 +237,27 @@ func TestDoctorD03_ValidDatabaseWithoutVectors(t *testing.T) {
 		t.Fatalf("absent graph: %+v", c)
 	}
 	assertDoctorTreeUnchanged(t, dir, before)
+	if err := os.Chmod(filepath.Join(dir, "gray.db"), 0o400); err != nil {
+		t.Fatalf("make DB read-only: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(dir, 0o500); err != nil {
+			_ = os.Chmod(filepath.Join(dir, "gray.db"), 0o600)
+			t.Fatalf("make data directory read-only: %v", err)
+		}
+	}
+	defer func() {
+		_ = os.Chmod(dir, 0o700)
+		_ = os.Chmod(filepath.Join(dir, "gray.db"), 0o600)
+	}()
+	beforeRO := snapshotDoctorTree(t, dir)
+	if c := checkStore(dir); c.Status != "ok" || !strings.Contains(c.Detail, "2 fact(s)") {
+		t.Fatalf("read-only media store count: %+v", c)
+	}
+	if c := checkKG(dir); c.Status != "info" {
+		t.Fatalf("read-only media absent graph: %+v", c)
+	}
+	assertDoctorTreeUnchanged(t, dir, beforeRO)
 }
 
 type doctorRecordingDaemon struct {
@@ -301,6 +322,22 @@ func TestDoctorD05_DaemonAndStaleDiscovery(t *testing.T) {
 			t.Fatalf("unexpected daemon RPCs: %+v", connections)
 		}
 		assertDoctorTreeUnchanged(t, dir, before)
+	})
+	t.Run("absent discovery", func(t *testing.T) {
+		dir := t.TempDir()
+		seedGrayDB(t, dir, 1)
+		discovery := filepath.Join(dir, "graymatter.addr")
+		if _, err := os.Lstat(discovery); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("fixture unexpectedly has daemon discovery: %v", err)
+		}
+		before := snapshotDoctorTree(t, dir)
+		if c := checkStore(dir); c.Status != "ok" || !strings.Contains(c.Detail, "direct read") {
+			t.Fatalf("absent daemon should use direct read: %+v", c)
+		}
+		assertDoctorTreeUnchanged(t, dir, before)
+		if _, err := os.Lstat(discovery); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("doctor created daemon discovery: %v", err)
+		}
 	})
 	t.Run("stale discovery", func(t *testing.T) {
 		dir := t.TempDir()
@@ -589,6 +626,83 @@ func TestDoctorD08_ProbeReplacementDuringDiagnostics(t *testing.T) {
 	}
 }
 
+// D08: replace the known DB leaf at the exact observation/open boundary, then
+// move the graph marker immediately after its stat. Both are changes made by
+// the fixture, while doctor only reports the state each read actually saw.
+func TestDoctorD08_DatabaseAndMarkerSwapAtObservation(t *testing.T) {
+	dir := t.TempDir()
+	seedGrayDB(t, dir, 1)
+	other := t.TempDir()
+	seedGrayDB(t, other, 2)
+	dbPath := filepath.Join(dir, "gray.db")
+	backup := filepath.Join(dir, "gray.db.before-swap")
+	candidate := filepath.Join(dir, "gray.db.candidate")
+	data, err := os.ReadFile(filepath.Join(other, "gray.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(candidate, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeDB := issue81SnapshotFile(t, dbPath)
+	beforeCandidate := issue81SnapshotFile(t, candidate)
+	oldLstat := doctorDBLstat
+	defer func() { doctorDBLstat = oldLstat }()
+	swapped := false
+	doctorDBLstat = func(path string) (os.FileInfo, error) {
+		info, err := os.Lstat(path)
+		if err != nil || path != dbPath || swapped {
+			return info, err
+		}
+		if err := os.Rename(dbPath, backup); err != nil {
+			t.Fatalf("move old DB during observation: %v", err)
+		}
+		if err := os.Rename(candidate, dbPath); err != nil {
+			t.Fatalf("publish candidate DB during observation: %v", err)
+		}
+		swapped = true
+		return info, nil
+	}
+	storeCheck := checkStore(dir)
+	if !swapped || storeCheck.Status != "ok" || !strings.Contains(storeCheck.Detail, "2 fact(s)") {
+		t.Fatalf("doctor did not report the opened replacement DB: swapped=%t check=%+v", swapped, storeCheck)
+	}
+	issue81AssertFileUnchanged(t, backup, beforeDB)
+	issue81AssertFileUnchanged(t, dbPath, beforeCandidate)
+
+	marker := daemon.KGSentinelPath(dir)
+	markerBackup := marker + ".before-swap"
+	if err := os.WriteFile(marker, []byte("fixture marker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeMarker := issue81SnapshotFile(t, marker)
+	oldMarkerStat := doctorKGMarkerStat
+	defer func() { doctorKGMarkerStat = oldMarkerStat }()
+	moved := false
+	doctorKGMarkerStat = func(path string) (os.FileInfo, error) {
+		info, err := os.Stat(path)
+		if err != nil || path != marker || moved {
+			return info, err
+		}
+		if err := os.Rename(marker, markerBackup); err != nil {
+			t.Fatalf("move graph marker during observation: %v", err)
+		}
+		moved = true
+		return info, nil
+	}
+	graphCheck := checkKG(dir)
+	if !moved || graphCheck.Status != "info" || !strings.Contains(graphCheck.Detail, "auto-population on") {
+		t.Fatalf("doctor did not report observed marker state: moved=%t check=%+v", moved, graphCheck)
+	}
+	issue81AssertFileUnchanged(t, markerBackup, beforeMarker)
+	if _, err := os.Lstat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("doctor recreated moved graph marker: %v", err)
+	}
+	if report := newDoctorSetupReport(dir, []checkResult{storeCheck, graphCheck}); report.Readiness != "not_evaluated" {
+		t.Fatalf("mixed observations certified readiness: %+v", report)
+	}
+}
+
 // D06–D07: direct lock contention is incomplete, while invalid DB bytes are
 // a failure; neither case creates a second writable store or vectors tree.
 func TestDoctorD06D07_LockAndCorruption(t *testing.T) {
@@ -725,6 +839,49 @@ func TestDoctorD10_ReportContract(t *testing.T) {
 	}
 }
 
+func TestDoctorD10_EmptyChecksAndEncoderFailure(t *testing.T) {
+	report := newDoctorSetupReport(".graymatter", nil)
+	if report.Status != "ok" || !report.OK || report.Readiness != "not_evaluated" {
+		t.Fatalf("empty checks aggregation: %+v", report)
+	}
+	var output bytes.Buffer
+	if err := writeDoctorSetupReport(&output, report, true); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Checks []checkResult `json:"checks"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Checks == nil || len(decoded.Checks) != 0 || !bytes.Contains(output.Bytes(), []byte(`"checks": []`)) {
+		t.Fatalf("empty checks must serialize as a JSON array: %s", output.String())
+	}
+
+	encodeErr := errors.New("injected encoder failure")
+	oldEncoder := doctorEncodeSetupJSON
+	doctorEncodeSetupJSON = func(w io.Writer, _ doctorSetupReport) error {
+		_, _ = io.WriteString(w, "{partial internal buffer")
+		return encodeErr
+	}
+	defer func() { doctorEncodeSetupJSON = oldEncoder }()
+	t.Chdir(t.TempDir())
+	oldDir, oldJSON, oldHome := dataDir, jsonOut, testHomeOverride
+	dataDir, jsonOut, testHomeOverride = filepath.Join(".", ".graymatter"), true, t.TempDir()
+	defer func() { dataDir, jsonOut, testHomeOverride = oldDir, oldJSON, oldHome }()
+	cmd := doctorCmd()
+	cmd.SilenceErrors, cmd.SilenceUsage = true, true
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); !errors.Is(err, encodeErr) {
+		t.Fatalf("doctor encoder failure did not propagate to CLI exit path: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("encoder failure leaked output: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 // D11: a word in a comment is only an observed substring reference.
 func TestDoctorD11_CommentIsNotReadiness(t *testing.T) {
 	root := t.TempDir()
@@ -825,6 +982,117 @@ func TestDoctorE06_RealCLIReadOnly(t *testing.T) {
 	if err != nil || string(data) != "user data" {
 		t.Fatalf("store-only touched probe: data=%q err=%v", data, err)
 	}
+}
+
+// E11: the released CLI shape must diagnose an active direct writer or store
+// daemon without taking ownership of the write lock. Store-only remains an
+// idempotent marker check, and facts remain retrievable after each owner exits.
+func TestDoctorE11_ActiveWriterAndDaemonSurviveDiagnostics(t *testing.T) {
+	f := newIssue81Fixture(t)
+
+	t.Run("direct writer", func(t *testing.T) {
+		project := filepath.Join(f.root, "e11-direct")
+		if err := os.MkdirAll(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dir := f.registerStore(filepath.Join(project, ".graymatter"))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writer, err := memory.Open(memory.StoreConfig{DataDir: dir, VectorBackend: doctorReadOnlyVectors{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = writer.Close() }()
+		fact := "direct writer durable anchor"
+		if err := writer.Put(context.Background(), "e11-agent", fact); err != nil {
+			t.Fatal(err)
+		}
+		before := snapshotDoctorTree(t, dir)
+		start := time.Now()
+		out := f.run(project, "", "--dir", dir, "doctor", "--json")
+		if out.code != 0 {
+			t.Fatalf("doctor under direct writer: exit=%d err=%v stderr=%q", out.code, out.err, out.stderr)
+		}
+		if elapsed := time.Since(start); elapsed > 8*time.Second {
+			t.Fatalf("doctor exceeded bounded read-only lock wait: %s", elapsed)
+		}
+		var report doctorSetupReport
+		decodeSingleDoctorReport(t, out.stdout, &report)
+		storeCheck := doctorCheckByName(t, report, "store")
+		if storeCheck.Status != "warn" || !strings.Contains(storeCheck.Detail, "held by a non-daemon") || report.Readiness != "not_evaluated" {
+			t.Fatalf("direct-writer report: store=%+v report=%+v", storeCheck, report)
+		}
+		if init := f.run(project, "", "--dir", dir, "init", "--store-only", "--json"); init.code != 0 || !strings.Contains(init.stdout, "already_prepared") {
+			t.Fatalf("store-only under direct writer: %+v", init)
+		}
+		assertDoctorTreeUnchanged(t, dir, before)
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		recalled := f.mustRun(project, "", "--dir", dir, "--no-daemon", "recall", "e11-agent", "direct writer durable")
+		if !strings.Contains(recalled.stdout, fact) {
+			t.Fatalf("fact lost after direct writer closed: %q", recalled.stdout)
+		}
+	})
+
+	t.Run("daemon owner", func(t *testing.T) {
+		project := filepath.Join(f.root, "e11-daemon")
+		if err := os.MkdirAll(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dir := f.registerStore(filepath.Join(project, ".graymatter"))
+		fact := "daemon durable anchor"
+		f.mustRun(project, "", "--dir", dir, "remember", "e11-agent", fact)
+		status := f.mustRun(project, "", "--dir", dir, "daemon", "status")
+		if !strings.Contains(status.stdout, "daemon: running") {
+			t.Fatalf("fixture daemon did not start: %+v", status)
+		}
+		dbPath := filepath.Join(dir, "gray.db")
+		if probe, err := bolt.Open(dbPath, 0o600, &bolt.Options{ReadOnly: true, Timeout: 100 * time.Millisecond}); err == nil {
+			_ = probe.Close()
+			t.Fatal("daemon did not retain the database lock")
+		} else if !errors.Is(err, bolt.ErrTimeout) {
+			t.Fatalf("unexpected lock probe error: %v", err)
+		}
+		before := snapshotDoctorTree(t, dir)
+		out := f.run(project, "", "--dir", dir, "doctor", "--json")
+		if out.code != 0 {
+			t.Fatalf("doctor with daemon: exit=%d err=%v stderr=%q", out.code, out.err, out.stderr)
+		}
+		var report doctorSetupReport
+		decodeSingleDoctorReport(t, out.stdout, &report)
+		storeCheck := doctorCheckByName(t, report, "store")
+		if storeCheck.Status != "ok" || !strings.Contains(storeCheck.Detail, "served by daemon") || !strings.Contains(storeCheck.Detail, "1 fact(s)") || report.Readiness != "not_evaluated" {
+			t.Fatalf("daemon report: store=%+v report=%+v", storeCheck, report)
+		}
+		if init := f.run(project, "", "--dir", dir, "init", "--store-only", "--json"); init.code != 0 || !strings.Contains(init.stdout, "already_prepared") {
+			t.Fatalf("store-only with daemon: %+v", init)
+		}
+		assertDoctorTreeUnchanged(t, dir, before)
+		f.stopDaemons()
+		if stopped := f.mustRun(project, "", "--dir", dir, "daemon", "status"); !strings.Contains(stopped.stdout, "not running") {
+			t.Fatalf("daemon did not stop: %+v", stopped)
+		}
+		recalled := f.mustRun(project, "", "--dir", dir, "recall", "e11-agent", "daemon durable")
+		if !strings.Contains(recalled.stdout, fact) {
+			t.Fatalf("fact lost after daemon restart: %q", recalled.stdout)
+		}
+		if restarted := f.mustRun(project, "", "--dir", dir, "daemon", "status"); !strings.Contains(restarted.stdout, "daemon: running") {
+			t.Fatalf("daemon did not restart: %+v", restarted)
+		}
+	})
+}
+
+func doctorCheckByName(t *testing.T, report doctorSetupReport, name string) checkResult {
+	t.Helper()
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("doctor report lacks check %q: %+v", name, report)
+	return checkResult{}
 }
 
 func decodeSingleDoctorReport(t *testing.T, output string, report *doctorSetupReport) {
