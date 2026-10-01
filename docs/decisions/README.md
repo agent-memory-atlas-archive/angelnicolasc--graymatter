@@ -25,6 +25,7 @@ consequences, reversal condition.
 | [013](013-structured-tool-results.md) | Tool results carry structuredContent twins with declared output schemas | Accepted |
 | [014](014-agent-id-canonical.md) | agent_id is the canonical agent parameter; agent remains a deprecated alias | Accepted |
 | [015](015-checkpoint-resume-empty-result.md) | checkpoint_resume returns a successful absence result under on_missing=empty | Accepted |
+| [016](016-confidence-options.md) | Explicit confidence writes, eligibility filters and bounded opt-in retrieval preference | Accepted, default promotion pending |
 
 ## Writing a new one
 

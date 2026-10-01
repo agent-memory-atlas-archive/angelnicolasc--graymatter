@@ -1,0 +1,1133 @@
+{
+  "policy": "confidence-v1",
+  "frozen_before_measurement": true,
+  "weights": [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5
+  ],
+  "top_k": 3,
+  "gates": {
+    "target": "All target top-1 selections must improve over zero when formula requires; at least one improvement.",
+    "protected": "Every baseline-relevant top-1 must remain relevant, with no family loss.",
+    "unverified": "Relevant unverified must remain in recall@k without filter; verified-only eligibility reported.",
+    "legacy": "Scores, IDs and order exactly unchanged at every weight.",
+    "holdout": "Select smallest calibration-passing weight once; evaluate only that weight on validation. No retries or label changes."
+  },
+  "families": [
+    {
+      "family": "session-expiry",
+      "split": "calibration",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "session expiry",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Signed policy: session expiry is ten minutes.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "session expiry is thirty minutes",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "vencimiento sesion",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Politica firmada: vencimiento sesion a los diez minutos.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "vencimiento sesion a los treinta minutos",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "backup-region",
+      "split": "calibration",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "backup region",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Reviewed decision: backup region is the western cluster.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "backup region is the eastern cluster",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "region respaldo",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Decision revisada: region respaldo es el cluster oeste.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "region respaldo es el cluster este",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "invoice-owner",
+      "split": "calibration",
+      "kind": "protected",
+      "variants": [
+        {
+          "language": "en",
+          "query": "invoice owner",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "invoice owner is Marina",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The verified cafeteria menu belongs to Operations.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "responsable facturas",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "responsable facturas es Marina",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El menu verificado del comedor pertenece a Operaciones.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "incident-channel",
+      "split": "calibration",
+      "kind": "unverified",
+      "variants": [
+        {
+          "language": "en",
+          "query": "incident channel",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "incident channel is the pager queue",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The office closes at seven.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "canal incidentes",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "canal incidentes es la cola de alertas",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "La oficina cierra a las siete.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "retention-days",
+      "split": "calibration",
+      "kind": "legacy",
+      "variants": [
+        {
+          "language": "en",
+          "query": "retention days",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "retention days are ninety",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "Lunch orders close before noon.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "dias retencion",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "dias retencion son noventa",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "Los pedidos de almuerzo cierran antes del mediodia.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "travel-policy",
+      "split": "calibration",
+      "kind": "negative",
+      "variants": [
+        {
+          "language": "en",
+          "query": "travel reimbursement",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "The build cache expires weekly.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "reintegro viajes",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "La cache de compilacion vence semanalmente.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "retry-limit",
+      "split": "calibration",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "retry limit",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Approved decision: retry limit is three per operation.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "retry limit is ten per operation",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "limite reintentos",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Decision aprobada: limite reintentos es tres por operacion.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "limite reintentos es diez por operacion",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "deploy-window",
+      "split": "calibration",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "deploy window",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Reviewed operations rule: deploy window opens on Tuesday.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "deploy window opens on Friday",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "ventana despliegue",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Regla operativa revisada: ventana despliegue abre el martes.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "ventana despliegue abre el viernes",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "audit-path",
+      "split": "calibration",
+      "kind": "protected",
+      "variants": [
+        {
+          "language": "en",
+          "query": "audit path",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "audit path is the ledger bucket",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The verified meeting room has six seats.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "ruta auditoria",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "ruta auditoria es el bucket contable",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "La sala de reuniones verificada tiene seis asientos.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "warehouse-port",
+      "split": "calibration",
+      "kind": "unverified",
+      "variants": [
+        {
+          "language": "en",
+          "query": "warehouse port",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "warehouse port is 7441",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The calendar uses blue labels.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "puerto almacen",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "puerto almacen es 7441",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El calendario usa etiquetas azules.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "timezone-rule",
+      "split": "calibration",
+      "kind": "legacy",
+      "variants": [
+        {
+          "language": "en",
+          "query": "timezone rule",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "timezone rule requires UTC for stored timestamps",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The scanner uses grayscale.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "regla zona horaria",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "regla zona horaria exige UTC en fechas guardadas",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El escaner usa escala de grises.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "legal-hold",
+      "split": "calibration",
+      "kind": "negative",
+      "variants": [
+        {
+          "language": "en",
+          "query": "legal hold owner",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "The dashboard refreshes hourly.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "responsable retencion legal",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "El tablero se actualiza cada hora.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "credential-rotation",
+      "split": "validation",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "credential rotation cadence",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Reviewed security decision: rotate credentials every thirty days.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "credential rotation cadence is annually",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "frecuencia rotacion credenciales",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Decision de seguridad revisada: rotar credenciales cada treinta dias.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "frecuencia rotacion credenciales es anual",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "queue-durability",
+      "split": "validation",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "queue persistence policy",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Approved record: messages survive process restarts.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "queue persistence policy says messages are ephemeral",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "politica persistencia cola",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Registro aprobado: los mensajes sobreviven reinicios del proceso.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "politica persistencia cola indica mensajes efimeros",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "billing-cutoff",
+      "split": "validation",
+      "kind": "protected",
+      "variants": [
+        {
+          "language": "en",
+          "query": "billing cutoff",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "billing cutoff is Thursday",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "billing cutoff discussion agenda mentions Thursday but records no decision and belongs to a different tenant",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "cierre facturacion",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "cierre facturacion es jueves",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "cierre facturacion agenda menciona jueves pero no registra decision y corresponde a otro cliente",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "cache-owner",
+      "split": "validation",
+      "kind": "unverified",
+      "variants": [
+        {
+          "language": "en",
+          "query": "who maintains cache",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Platform maintains the cache",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The verified holiday calendar is available.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "quien mantiene cache",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Plataforma mantiene la cache",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El calendario de feriados verificado esta disponible.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "smtp-endpoint",
+      "split": "validation",
+      "kind": "legacy",
+      "variants": [
+        {
+          "language": "en",
+          "query": "mail transport endpoint",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "The mail transport endpoint is relay.internal",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The elevator is under maintenance.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "destino transporte correo",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "El destino transporte correo es relay.internal",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El ascensor esta en mantenimiento.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "access-review",
+      "split": "validation",
+      "kind": "negative",
+      "variants": [
+        {
+          "language": "en",
+          "query": "access review approver",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "The development server uses a dark theme.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "aprobador revision accesos",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "El servidor de desarrollo usa tema oscuro.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "database-isolation",
+      "split": "validation",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "transaction isolation",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Reviewed architecture record: writers use serializable isolation.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "transaction isolation is read uncommitted",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "aislamiento transacciones",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Registro de arquitectura revisado: escritores usan aislamiento serializable.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "aislamiento transacciones es lectura no confirmada",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "outage-budget",
+      "split": "validation",
+      "kind": "target",
+      "variants": [
+        {
+          "language": "en",
+          "query": "outage budget",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Accepted availability decision: outage budget is forty minutes monthly.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "outage budget is four hours monthly",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "presupuesto caidas",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Decision de disponibilidad aceptada: presupuesto caidas es cuarenta minutos mensuales.",
+              "confidence": "verified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "presupuesto caidas es cuatro horas mensuales",
+              "confidence": "unverified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "oncall-handoff",
+      "split": "validation",
+      "kind": "protected",
+      "variants": [
+        {
+          "language": "en",
+          "query": "oncall handoff time",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "oncall handoff time is noon",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "oncall handoff time template includes noon but is an unrelated historical training exercise with no operative value",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "horario relevo guardia",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "horario relevo guardia es mediodia",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "horario relevo guardia plantilla incluye mediodia pero es un ejercicio historico ajeno sin valor operativo",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "artifact-mirror",
+      "split": "validation",
+      "kind": "unverified",
+      "variants": [
+        {
+          "language": "en",
+          "query": "artifact mirror location",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "The artifact mirror lives in storage west",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The verified team logo is green.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "ubicacion espejo artefactos",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "El espejo artefactos reside en almacenamiento oeste",
+              "confidence": "unverified",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El logo verificado del equipo es verde.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "feature-freeze",
+      "split": "validation",
+      "kind": "legacy",
+      "variants": [
+        {
+          "language": "en",
+          "query": "freeze begins when",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "Feature freeze begins on Monday",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "The verified plant inventory is complete.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "cuando comienza congelamiento",
+          "relevant_keys": [
+            "relevant"
+          ],
+          "facts": [
+            {
+              "key": "relevant",
+              "text": "El congelamiento funcionalidades comienza el lunes",
+              "confidence": "",
+              "age_hours": 24
+            },
+            {
+              "key": "distractor",
+              "text": "El inventario de plantas verificado esta completo.",
+              "confidence": "",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "disaster-contact",
+      "split": "validation",
+      "kind": "negative",
+      "variants": [
+        {
+          "language": "en",
+          "query": "disaster recovery contact",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "The printer accepts A4 paper.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        },
+        {
+          "language": "es",
+          "query": "contacto recuperacion desastres",
+          "relevant_keys": [],
+          "facts": [
+            {
+              "key": "distractor",
+              "text": "La impresora acepta papel A4.",
+              "confidence": "verified",
+              "age_hours": 0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
