@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -31,21 +32,38 @@ func confidencePreviousBinary(t *testing.T) string {
 	if testing.Short() {
 		t.Skip("builds a pinned previous binary and runs daemon upgrade/downgrade")
 	}
-	archive := exec.Command("git", "archive", "--format=tar", confidencePreviousRevision)
-	archive.Dir = filepath.Join("..", "..")
+	binary, err := cliE2EBinaries.get(confidencePreviousRevision, buildConfidencePreviousBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("previous source archive sha256=%s", binary.archiveSHA256)
+	bin := filepath.Join(t.TempDir(), filepath.Base(binary.path))
+	issue81CopyExecutable(t, binary.path, bin)
+	return bin
+}
+
+func buildConfidencePreviousBinary(env e2eBuildEnvironment, dir string) (e2eBuiltBinary, error) {
+	archive, err := env.command("git", "archive", "--format=tar", confidencePreviousRevision)
+	if err != nil {
+		return e2eBuiltBinary{}, err
+	}
+	archive.Dir = filepath.Join(env.cwd, "..", "..")
 	data, err := archive.Output()
 	if err != nil {
-		t.Fatalf("archive pinned baseline %s: %v", confidencePreviousRevision, err)
+		return e2eBuiltBinary{}, fmt.Errorf("archive pinned baseline %s: %w", confidencePreviousRevision, err)
+	}
+	source := filepath.Join(dir, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		return e2eBuiltBinary{}, err
 	}
 	// Go resolves the child working directory before matching workspace modules.
 	// Resolve aliases such as macOS /var -> /private/var so GOWORK and cwd use
 	// the same source path when building the archived nested CLI module.
-	source, err := filepath.EvalSymlinks(t.TempDir())
+	source, err = filepath.EvalSymlinks(source)
 	if err != nil {
-		t.Fatalf("resolve previous source directory: %v", err)
+		return e2eBuiltBinary{}, fmt.Errorf("resolve previous source directory: %w", err)
 	}
 	archiveHash := sha256.Sum256(data)
-	t.Logf("previous source archive sha256=%x", archiveHash)
 	reader := tar.NewReader(bytes.NewReader(data))
 	for {
 		header, err := reader.Next()
@@ -53,33 +71,33 @@ func confidencePreviousBinary(t *testing.T) string {
 			break
 		}
 		if err != nil {
-			t.Fatal(err)
+			return e2eBuiltBinary{}, err
 		}
 		path := filepath.Join(source, filepath.FromSlash(header.Name))
 		relative, err := filepath.Rel(source, path)
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-			t.Fatalf("archive escapes fixture: %q", header.Name)
+			return e2eBuiltBinary{}, fmt.Errorf("archive escapes fixture: %q", header.Name)
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(path, 0o755); err != nil {
-				t.Fatal(err)
+				return e2eBuiltBinary{}, err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
+				return e2eBuiltBinary{}, err
 			}
 			file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
 			if err != nil {
-				t.Fatal(err)
+				return e2eBuiltBinary{}, err
 			}
 			_, copyErr := io.Copy(file, reader)
 			closeErr := file.Close()
 			if copyErr != nil {
-				t.Fatal(copyErr)
+				return e2eBuiltBinary{}, copyErr
 			}
 			if closeErr != nil {
-				t.Fatal(closeErr)
+				return e2eBuiltBinary{}, closeErr
 			}
 		}
 	}
@@ -87,14 +105,17 @@ func confidencePreviousBinary(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	bin := filepath.Join(t.TempDir(), name)
-	build := exec.Command("go", "build", "-trimpath", "-o", bin, "./cmd/graymatter")
-	build.Dir = source
-	build.Env = append(os.Environ(), "GOWORK="+filepath.Join(source, "go.work"))
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build previous: %v\n%s", err, output)
+	bin := filepath.Join(dir, name)
+	build, err := env.command("go", "build", "-trimpath", "-o", bin, "./cmd/graymatter")
+	if err != nil {
+		return e2eBuiltBinary{}, err
 	}
-	return bin
+	build.Dir = source
+	build.Env = issue81Env(env.env, map[string]string{"GOWORK": filepath.Join(source, "go.work")})
+	if output, err := build.CombinedOutput(); err != nil {
+		return e2eBuiltBinary{}, fmt.Errorf("build previous: %w\n%s", err, output)
+	}
+	return e2eBuiltBinary{path: bin, archiveSHA256: fmt.Sprintf("%x", archiveHash)}, nil
 }
 
 func confidenceBinaryChecksum(t *testing.T, binary string) string {

@@ -73,10 +73,7 @@ func newIssue81Fixture(t *testing.T) *issue81Fixture {
 	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v\n%s", err, out)
-	}
+	copyCurrentE2EBinary(t, bin)
 	home := filepath.Join(root, "home")
 	for _, path := range []string{home, filepath.Join(root, "tmp"), runtimeDir, filepath.Join(home, "appdata"), filepath.Join(home, "localappdata"), filepath.Join(home, "xdg"), filepath.Join(home, "codex"), filepath.Join(home, "claude")} {
 		if err := os.MkdirAll(path, 0o755); err != nil {

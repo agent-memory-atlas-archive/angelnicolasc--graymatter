@@ -64,7 +64,8 @@ jobs:
       # runner has twice crossed it with nothing wrong - run 33842978778 (PR #90)
       # and run 33899489378 (main at 5e79f7b), both windows-latest/go1.25, both
       # timing out at exactly 300.1s with the package still progressing. The
-      # remaining 300s suites keep theirs: they measure 4-37s, an 8-75x margin.
+      # CLI suites retain 300s; entrypoint JSON timings track its growing E2E
+      # cost separately, without weakening assertions or coverage thresholds.
       - name: Test core library with coverage
         shell: bash
         run: go test -race -count=1 -timeout=600s -coverprofile=coverage-core.out -covermode=atomic ./pkg/memory/...
@@ -87,35 +88,23 @@ jobs:
       - name: Test CLI entrypoint package
         working-directory: cmd/graymatter
         shell: bash
-        run: go test -race -count=1 -timeout=300s .
+        run: |
+          set -euo pipefail
+          go test -json -race -count=1 -timeout=300s . |
+            tee ../../cli-tests.json |
+            go run ../../tools/testtiming -summary "$GITHUB_STEP_SUMMARY"
 
-      # ./benchmarks/... was missing from every step above, so the tests that
-      # guard published numbers never ran in CI at all. They are the gates that
-      # keep README.md and docs/benchmarks.md matching what the benchmarks
-      # actually print, and that reject a corpus whose gold IDs no longer
-      # resolve — both of which fail silently by producing a plausible wrong
-      # number, which is the failure mode they exist to prevent.
-      # 600s ceiling: consolidation-gate and README-table tests run real
-      # recall+consolidation cycles under -race; on loaded windows runners
-      # they intermittently exceed 180s (observed 3/6 runs in one evening),
-      # which reads as a quality regression when it is only runner slowness.
-      #
-      # 1200s, not 600: on the slowest runners retrieval_quality alone costs
-      # ~360 s under -race; the 600 s default timed it out with nothing wrong
-      # (windows-latest / go1.25, run 33120309321).
-      #
-      # hook_latency is deliberately NOT in this blocking step: it is a
-      # timing measurement, and timing measurements on shared runners are a
-      # lottery multiplied by this matrix — four consecutive runs failed on
-      # a different runner each time (proxy drift, macOS 170 ms, Windows
-      # timeout, macOS noise) while the same tree passed everywhere else.
-      # The deterministic gates for the hot path (ordering, parity, receipt
-      # arithmetic) live in the test job and stay blocking; the timing
-      # measurement runs report-only in the bench job below, where a breach
-      # is visible without blocking merges.
-      - name: Test benchmark packages
-        shell: bash
-        run: go test -race -count=1 -timeout=1200s ./benchmarks/token_count/... ./benchmarks/retrieval_quality/... ./benchmarks/revision_currency/...
+      # Keep the raw events even after a test failure or package timeout.
+      # pipefail above preserves failures from go test, tee and the reporter.
+      - name: Upload CLI test timings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-test-timings-${{ matrix.os }}-go${{ matrix.go }}
+          path: cli-tests.json
+          archive: true
+          retention-days: 14
+          if-no-files-found: ignore
 
       # Receipt, environment and reporting contracts are deterministic. Keep
       # them blocking without running wall-clock measurements in this matrix.
@@ -179,6 +168,40 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # These correctness tests guard published retrieval/revision claims. They
+  # retain all six platforms/toolchains and -race, but run concurrently with
+  # the core/CLI matrix: revision_currency alone took 517s on Windows in
+  # run 36960880220. They are blocking, unlike the timing-only bench job.
+  benchmark-tests:
+    name: Benchmark correctness (${{ matrix.os }} / go${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ["1.25", "1.26.7"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go ${{ matrix.go }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            cmd/graymatter/go.sum
+
+      - name: Source-replace the library into the CLI module
+        working-directory: cmd/graymatter
+        run: go mod edit -replace github.com/angelnicolasc/graymatter=../..
+
+      # Keep the existing 1200s ceiling: the real recall/consolidation suites
+      # have exceeded 600s on loaded Windows runners (run 33120309321).
+      - name: Test benchmark packages
+        shell: bash
+        run: go test -race -count=1 -timeout=1200s ./benchmarks/token_count/... ./benchmarks/retrieval_quality/... ./benchmarks/revision_currency/...
+
   # Statement coverage measured on one operating system systematically
   # undercounts this repository: platform-split files (Windows ACLs, unix
   # sockets) only execute their own OS's tests. This job merges the per-OS
@@ -186,7 +209,7 @@ jobs:
   # means "tested somewhere in the matrix", not "tested on Linux".
   coverage-union:
     name: Coverage union (all platforms)
-    needs: test
+    needs: [test, benchmark-tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,7 +223,7 @@ jobs:
             cmd/graymatter/go.sum
 
       - name: Check workflow contracts
-        run: go test ./tools/workflowcontract
+        run: go test ./tools/workflowcontract ./tools/testtiming
 
       - name: Source-replace the library into the CLI module
         working-directory: cmd/graymatter
@@ -378,7 +401,7 @@ jobs:
   bench:
     name: Benchmarks (non-blocking)
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, benchmark-tests, coverage-union, version-consistency, vulncheck]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -15,10 +16,19 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-test.") {
 		os.Exit(2)
 	}
+	env, err := captureE2EBuildEnvironment()
+	// Helper subprocesses may deliberately lack build tools or a usable cwd.
+	// Report capture failures only if a test actually requests a binary.
+	cliE2EBinaries = &e2eBinaryCache{env: env, initErr: err}
 	// In-process command tests use a direct store. Daemon E2E tests compile
 	// and launch the real CLI binary with their own isolated environment.
 	noDaemon = true
 	initAddExeDirToUserPath = func() (bool, error) { return false, nil }
 	initPreflightPath = func() error { return nil }
-	os.Exit(m.Run())
+	code := m.Run()
+	if err := cliE2EBinaries.close(); err != nil {
+		fmt.Fprintln(os.Stderr, "clean E2E binary cache:", err)
+		code = 1
+	}
+	os.Exit(code)
 }
