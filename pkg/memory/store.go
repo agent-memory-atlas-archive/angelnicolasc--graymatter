@@ -107,6 +107,10 @@ type StoreConfig struct {
 	// docs/decisions/006-configurable-signal-weights.md.
 	SignalWeights *SignalWeights
 
+	// ConfidenceWeight is the per-store default for confidence preference.
+	// Zero preserves the legacy ranking. Valid values are finite in [0, 0.5].
+	ConfidenceWeight float64
+
 	// StemKeywords folds English morphology into the keyword signal, so a
 	// question about "backups" reaches a fact about "backup retention" and one
 	// about a "pager rotation" reaches "rotations were stretched". Three of the
@@ -315,6 +319,9 @@ type Store struct {
 
 // Open creates or opens the GrayMatter store at cfg.DataDir.
 func Open(cfg StoreConfig) (*Store, error) {
+	if err := (RecallOptions{ConfidenceWeight: &cfg.ConfidenceWeight}).Validate(); err != nil {
+		return nil, err
+	}
 	if cfg.MaxAsyncConsolidations <= 0 {
 		cfg.MaxAsyncConsolidations = 2
 	}
@@ -469,8 +476,8 @@ func (s *Store) IsReadOnly() bool { return s.readOnly }
 //
 // PutConfident stores a fact with an explicit epistemic confidence:
 // "verified", "inferred" or "unverified" ("" defaults to inferred). The
-// value is metadata for humans and exports; it never affects ranking,
-// decay or pruning.
+// Empty retains the legacy representation with effective inferred confidence.
+// Confidence never affects decay or pruning.
 //
 // Added in v0.12.0.
 func (s *Store) PutConfident(ctx context.Context, agentID, text, confidence string) error {
@@ -479,19 +486,12 @@ func (s *Store) PutConfident(ctx context.Context, agentID, text, confidence stri
 	default:
 		return fmt.Errorf("confidence must be verified|inferred|unverified, got %q", confidence)
 	}
-	// The write path hands back the fact it just committed, so attaching the
-	// marker is one direct update. The previous implementation re-listed the
-	// whole agent and text-scanned for the new arrival - O(N) per confident
-	// write and racy against concurrent writers.
-	f, err := s.putReturningFact(ctx, agentID, text)
-	if err != nil {
-		return err
+	options := WriteOptions{}
+	if confidence != "" {
+		options.Confidence = &confidence
 	}
-	if f.Confidence != "" {
-		return nil // a same-text write raced ahead and already stamped one
-	}
-	f.Confidence = confidence
-	return s.UpdateFact(agentID, f)
+	_, err := s.PutWithOptionsReturningFact(ctx, agentID, text, options)
+	return err
 }
 
 // This closes the crash window between the bbolt write and the vector write:
@@ -505,7 +505,13 @@ func (s *Store) Put(ctx context.Context, agentID, text string) error {
 // the identity-preserving counterpart to Put for callers that must persist a
 // reference to their own write without rediscovering it through List.
 func (s *Store) PutReturningFact(ctx context.Context, agentID, text string) (Fact, error) {
-	return s.putReturningFact(ctx, agentID, text)
+	return s.PutWithOptionsReturningFact(ctx, agentID, text, WriteOptions{})
+}
+
+// PutWithOptionsReturningFact commits text and confidence together, returning
+// the exact durable fact. Invalid options fail before embedding or store access.
+func (s *Store) PutWithOptionsReturningFact(ctx context.Context, agentID, text string, options WriteOptions) (Fact, error) {
+	return s.putReturningFactPrepared(ctx, agentID, text, KindFact, "", options, nil)
 }
 
 // putReturningFact is the single durable write path: it commits the fact and
@@ -520,8 +526,25 @@ func (s *Store) putReturningFact(ctx context.Context, agentID, text string) (Fac
 // never injectable, and a vector entry for one could only ever contribute a
 // rank nobody reads.
 func (s *Store) putReturningFactKind(ctx context.Context, agentID, text, kind, source string) (Fact, error) {
+	return s.putReturningFactPrepared(ctx, agentID, text, kind, source, WriteOptions{}, nil)
+}
+
+// prepare runs in the new fact's write transaction before the first durable
+// write. Derived writes use it to validate their source snapshot and stamp the
+// conservative label without a transient unlabeled fact.
+func (s *Store) putReturningFactPrepared(ctx context.Context, agentID, text, kind, source string, options WriteOptions, prepare func(*bolt.Tx, *Fact) error) (Fact, error) {
+	if options.Confidence != nil {
+		confidence := *options.Confidence
+		options.Confidence = &confidence
+	}
+	if err := options.Validate(); err != nil {
+		return Fact{}, err
+	}
 	if s.readOnly {
 		return Fact{}, ErrStoreReadOnly
+	}
+	if err := ctx.Err(); err != nil {
+		return Fact{}, err
 	}
 	start := time.Now()
 
@@ -537,9 +560,20 @@ func (s *Store) putReturningFactKind(ctx context.Context, agentID, text, kind, s
 	f := newFact(agentID, text, emb, s.now())
 	f.Kind = kind
 	f.AliasSource = source
+	if options.Confidence != nil {
+		f.Confidence = *options.Confidence
+	}
 	hasEmbedding := len(emb) > 0
 
 	if err := s.db.Update(func(tx *bolt.Tx) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if prepare != nil {
+			if err := prepare(tx, &f); err != nil {
+				return err
+			}
+		}
 		b, err := tx.Bucket(bucketFacts).CreateBucketIfNotExists([]byte(agentID))
 		if err != nil {
 			return err
@@ -562,8 +596,9 @@ func (s *Store) putReturningFactKind(ctx context.Context, agentID, text, kind, s
 		// but it made every write on every store pay for a path that is off
 		// by default — measured at roughly double the Put latency — and a
 		// store nobody opted in for should cost exactly what it cost before
-		// this file existed. Turning the flag on later is safe without it:
-		// the count will not match, and the first recall rebuilds.
+		// this file existed. Invalidate any previous index when maintenance
+		// is off: a delete followed by a put can preserve the old fact count,
+		// so count checking alone cannot make re-enabling retrieval safe.
 		if s.cfg.CandidateRetrieval {
 			if err := idxAddFact(tx, f, s.cfg.StemKeywords); err != nil {
 				return err
@@ -571,6 +606,8 @@ func (s *Store) putReturningFactKind(ctx context.Context, agentID, text, kind, s
 			if err := idxBumpCount(tx, agentID, +1, s.cfg.StemKeywords); err != nil {
 				return err
 			}
+		} else if err := idxInvalidate(tx, agentID); err != nil {
+			return err
 		}
 		if hasEmbedding {
 			pb, err := tx.Bucket(bucketPendingVector).CreateBucketIfNotExists([]byte(agentID))
@@ -617,36 +654,39 @@ func (s *Store) Delete(agentID, factID string) error {
 		return ErrStoreReadOnly
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
-		parent := tx.Bucket(bucketFacts)
-		b := parent.Bucket([]byte(agentID))
-		if b == nil {
-			return nil
-		}
-		// Read before deleting: the index entries to erase are derived from
-		// the stored text, so once the fact is gone there is nothing left to
-		// derive them from.
-		if s.cfg.CandidateRetrieval {
-			if raw := b.Get([]byte(factID)); raw != nil {
-				if old, err := unmarshalFactLite(raw); err == nil {
-					if err := idxRemoveFact(tx, old, s.cfg.StemKeywords); err != nil {
-						return err
-					}
-				}
-			}
-		}
-		if err := b.Delete([]byte(factID)); err != nil {
+		return s.deleteFactTx(tx, agentID, factID)
+	})
+}
+
+func (s *Store) deleteFactTx(tx *bolt.Tx, agentID, factID string) error {
+	b := tx.Bucket(bucketFacts).Bucket([]byte(agentID))
+	if b == nil || b.Get([]byte(factID)) == nil {
+		return nil
+	}
+	// Erase derived entries before losing the canonical text.
+	if s.cfg.CandidateRetrieval {
+		old, err := unmarshalFactLite(b.Get([]byte(factID)))
+		if err != nil {
 			return err
 		}
-		if s.cfg.CandidateRetrieval {
-			if err := idxBumpCount(tx, agentID, -1, s.cfg.StemKeywords); err != nil {
-				return err
-			}
+		if err := idxRemoveFact(tx, old, s.cfg.StemKeywords); err != nil {
+			return err
 		}
-		if kb := tx.Bucket(bucketKGExtracted); kb != nil {
-			return kb.Delete([]byte(agentID + "\x00" + factID))
+	}
+	if err := b.Delete([]byte(factID)); err != nil {
+		return err
+	}
+	if s.cfg.CandidateRetrieval {
+		if err := idxBumpCount(tx, agentID, -1, s.cfg.StemKeywords); err != nil {
+			return err
 		}
-		return nil
-	})
+	} else if err := idxInvalidate(tx, agentID); err != nil {
+		return err
+	}
+	if kb := tx.Bucket(bucketKGExtracted); kb != nil {
+		return kb.Delete([]byte(agentID + "\x00" + factID))
+	}
+	return nil
 }
 
 // List returns all facts for agentID, sorted newest first.
@@ -815,7 +855,9 @@ func (s *Store) touchFacts(facts []Fact) {
 	})
 }
 
-// UpdateFact persists a modified fact (used by consolidation + decay).
+// UpdateFact persists an intentional full fact modification and maintains the
+// retrieval index, including changes to confidence alone. Internal lifecycle
+// operations use narrow transactional patches rather than replaying snapshots.
 func (s *Store) UpdateFact(agentID string, f Fact) error {
 	if s.readOnly {
 		return ErrStoreReadOnly
@@ -858,10 +900,6 @@ func (s *Store) UpdateFact(agentID string, f Fact) error {
 				return nil
 			}
 		}
-		data, err := f.marshal()
-		if err != nil {
-			return err
-		}
 		// Candidate-set index. This is the path a revision takes — the
 		// tombstone is an UpdateFact — and it is also the path a CreatedAt
 		// rewrite takes, so both the term postings and the fact's place in the
@@ -869,24 +907,39 @@ func (s *Store) UpdateFact(agentID string, f Fact) error {
 		// stored, then write the ones the new version implies; doing it in
 		// that order is what keeps a rewritten text from stranding postings
 		// under its old vocabulary.
-		if !s.cfg.CandidateRetrieval {
-			return b.Put([]byte(f.ID), data)
-		}
-		if raw := b.Get([]byte(f.ID)); raw != nil {
-			if prev, uerr := unmarshalFactLite(raw); uerr == nil {
-				if err := idxRemoveFact(tx, prev, s.cfg.StemKeywords); err != nil {
-					return err
-				}
-			}
-		}
-		if err := b.Put([]byte(f.ID), data); err != nil {
-			return err
-		}
-		if err := idxAddFact(tx, f, s.cfg.StemKeywords); err != nil {
-			return err
-		}
-		return idxBumpCount(tx, agentID, 0, s.cfg.StemKeywords)
+		return s.persistFactTx(tx, b, agentID, f)
 	})
+}
+
+// persistFactTx writes an existing fact and updates all derived index entries.
+// The caller must read and validate the current fact in this same transaction.
+func (s *Store) persistFactTx(tx *bolt.Tx, b *bolt.Bucket, agentID string, f Fact) error {
+	data, err := f.marshal()
+	if err != nil {
+		return err
+	}
+	if !s.cfg.CandidateRetrieval {
+		if err := idxInvalidate(tx, agentID); err != nil {
+			return err
+		}
+		return b.Put([]byte(f.ID), data)
+	}
+	if raw := b.Get([]byte(f.ID)); raw != nil {
+		prev, err := unmarshalFactLite(raw)
+		if err != nil {
+			return err
+		}
+		if err := idxRemoveFact(tx, prev, s.cfg.StemKeywords); err != nil {
+			return err
+		}
+	}
+	if err := b.Put([]byte(f.ID), data); err != nil {
+		return err
+	}
+	if err := idxAddFact(tx, f, s.cfg.StemKeywords); err != nil {
+		return err
+	}
+	return idxBumpCount(tx, agentID, 0, s.cfg.StemKeywords)
 }
 
 // Close signals all background goroutines to stop, waits for them to exit,
@@ -909,6 +962,12 @@ func (s *Store) PutShared(ctx context.Context, text string) error {
 	return s.Put(ctx, SharedAgentID, text)
 }
 
+// PutSharedWithOptionsReturningFact commits an explicit shared observation and
+// confidence together, returning the exact durable identity.
+func (s *Store) PutSharedWithOptionsReturningFact(ctx context.Context, text string, options WriteOptions) (Fact, error) {
+	return s.PutWithOptionsReturningFact(ctx, SharedAgentID, text, options)
+}
+
 // RecallShared returns the top-k most relevant shared facts for query.
 func (s *Store) RecallShared(ctx context.Context, query string, topK int) ([]string, error) {
 	return s.Recall(ctx, SharedAgentID, query, topK)
@@ -924,15 +983,15 @@ func (s *Store) RecallShared(ctx context.Context, query string, topK int) ([]str
 // this, results were concatenated agent-first and truncated, which starved
 // the shared namespace whenever the agent list filled its topK.
 func (s *Store) RecallAll(ctx context.Context, agentID, query string, topK int) ([]string, error) {
-	agentResults, err := s.Recall(ctx, agentID, query, topK)
+	policy, err := s.resolveRecallPolicy(RecallOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("recall agent: %w", err)
+		return nil, err
 	}
-	sharedResults, err := s.Recall(ctx, SharedAgentID, query, topK)
-	if err != nil {
-		return nil, fmt.Errorf("recall shared: %w", err)
+	if topK < 0 {
+		topK = 0
 	}
-	return fuseRecallResults(agentResults, sharedResults, topK), nil
+	result, err := s.recallAllWithPolicy(ctx, agentID, query, topK, policy)
+	return result.Facts, err
 }
 
 // fuseRecallResults merges two recall rankings with Reciprocal Rank Fusion
@@ -1098,10 +1157,17 @@ func (s *Store) reindexFact(ctx context.Context, agentID string, f *Fact, target
 		if len(fresh) == 0 {
 			return fmt.Errorf("re-embed returned no vector")
 		}
-		f.Embedding = fresh
-		if err := s.UpdateFact(agentID, *f); err != nil {
+		updated, err := s.patchFact(agentID, f.ID, func(current *Fact) error {
+			if current.IsSuperseded() || current.Text != f.Text {
+				return ErrFactChanged
+			}
+			current.Embedding = fresh
+			return nil
+		})
+		if err != nil {
 			return fmt.Errorf("persist re-embedded fact: %w", err)
 		}
+		*f = updated
 	}
 	return s.addToVector(ctx, agentID, *f)
 }

@@ -16,10 +16,11 @@ import "github.com/angelnicolasc/graymatter/pkg/memory"
 // take it and ignore the per-query breakdown, and a fact that answered three
 // of the questions appears once rather than three times.
 type batchResult struct {
-	AgentID  string   `json:"agent_id"`
-	Count    int      `json:"count"`
-	Merged   []string `json:"merged"`
-	PerQuery []struct {
+	Retrieval *memory.RetrievalMetadata `json:"retrieval,omitempty"`
+	AgentID   string                    `json:"agent_id"`
+	Count     int                       `json:"count"`
+	Merged    []string                  `json:"merged"`
+	PerQuery  []struct {
 		Query string   `json:"query"`
 		Facts []string `json:"facts"`
 		Error string   `json:"error,omitempty"`
@@ -27,10 +28,11 @@ type batchResult struct {
 }
 
 type searchResult struct {
-	AgentID string   `json:"agent_id"`
-	Query   string   `json:"query"`
-	Count   int      `json:"count"`
-	Facts   []string `json:"facts"`
+	Retrieval *memory.RetrievalMetadata `json:"retrieval,omitempty"`
+	AgentID   string                    `json:"agent_id"`
+	Query     string                    `json:"query"`
+	Count     int                       `json:"count"`
+	Facts     []string                  `json:"facts"`
 	// Feedback carries the weak-match vocabulary block (v0.18.0): additive
 	// text emitted when the query's vocabulary barely overlaps the store's.
 	// Omitted when the match is strong, so the bare shape is unchanged.
@@ -53,8 +55,10 @@ type aliasResult struct {
 }
 
 type addResult struct {
-	AgentID string `json:"agent_id"`
-	Stored  bool   `json:"stored"`
+	FactID     string `json:"fact_id,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
+	AgentID    string `json:"agent_id"`
+	Stored     bool   `json:"stored"`
 }
 
 type checkpointSaveResult struct {
@@ -86,7 +90,9 @@ type checkpointResumeEmpty struct {
 }
 
 type reflectResult struct {
-	Action string `json:"action"`
-	Agent  string `json:"agent"`
-	OK     bool   `json:"ok"`
+	FactID     string `json:"fact_id,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
+	Action     string `json:"action"`
+	Agent      string `json:"agent"`
+	OK         bool   `json:"ok"`
 }

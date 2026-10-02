@@ -31,6 +31,9 @@ type RecallReceipt struct {
 	// KGLinks lists the entity IDs the knowledge-graph extractor finds in the
 	// fact text, when an extractor is wired. Omitted otherwise.
 	KGLinks []string `json:"kg_links,omitempty"`
+	// Ranking identifies the score that governed selection, while FusedScore
+	// remains the original base RRF value for existing receipt consumers.
+	Ranking *ConfidenceRanking `json:"ranking,omitempty"`
 }
 
 // RecallRanks breaks one fact's fused RRF score into the per-signal ranks that
@@ -71,6 +74,10 @@ type RecallProvenance struct {
 // newReceipt builds one receipt from the pipeline's ranking state. Extracted
 // so RecallExplain stays readable and the field mapping has exactly one home.
 func (s *Store) newReceipt(f *Fact, p *recallPipeline, fused float64) RecallReceipt {
+	base := fused
+	if p.baseScores != nil {
+		base = p.baseScores[f.ID]
+	}
 	r := RecallReceipt{
 		Text:    f.Text,
 		Weight:  f.Weight,
@@ -79,7 +86,7 @@ func (s *Store) newReceipt(f *Fact, p *recallPipeline, fused float64) RecallRece
 			VectorRank:  p.vectorRank[f.ID],
 			KeywordRank: p.kwRank[f.ID],
 			RecencyRank: p.recRank[f.ID],
-			FusedScore:  fused,
+			FusedScore:  base,
 			K:           p.k,
 		},
 		Provenance: RecallProvenance{
@@ -90,6 +97,9 @@ func (s *Store) newReceipt(f *Fact, p *recallPipeline, fused float64) RecallRece
 			Pinned:       f.Pinned,
 			Supersedes:   p.lineage(f.ID),
 		},
+	}
+	if p.policy.metadata {
+		r.Ranking = &ConfidenceRanking{BaseScore: base, FinalScore: fused, Factor: p.policy.factor(f.Confidence), EffectiveConfidence: EffectiveConfidence(f.Confidence), ConfidenceWeight: p.policy.weight, Policy: ConfidencePolicy}
 	}
 	s.mu.RLock()
 	extractor := s.extractor

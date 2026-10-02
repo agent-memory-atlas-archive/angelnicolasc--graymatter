@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"time"
@@ -46,8 +47,42 @@ import (
 // a maintaining path, or one opened read-only before its first rebuild, must
 // still answer correctly.
 func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query string, topK int) (*recallPipeline, error) {
+	policy, err := s.resolveRecallPolicy(RecallOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return s.runRecallPipelineIndexedWithPolicy(ctx, agentID, query, topK, policy)
+}
+
+func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) (*recallPipeline, error) {
 	start := time.Now()
 	doStem := s.cfg.StemKeywords
+	// Compact ranking and canonical head/feedback loads use several read
+	// transactions. A confidence mutation between them must not mix an old
+	// eligibility/score with new provenance. Guard only active confidence
+	// calls; legacy zero-weight calls retain their existing read cost.
+	var initial indexState
+	var initialFound bool
+	if policy.metadata {
+		if err := s.db.View(func(tx *bolt.Tx) error {
+			initial, initialFound = idxReadState(tx, agentID)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	stable := func() error {
+		if !policy.metadata {
+			return nil
+		}
+		return s.db.View(func(tx *bolt.Tx) error {
+			current, found := idxReadState(tx, agentID)
+			if !initialFound || !found || current != initial {
+				return errIndexUnusable
+			}
+			return nil
+		})
+	}
 
 	// The spine's three populations, and the id -> position map the scorer
 	// needs. All four are pure functions of the index state, so they are cached
@@ -60,7 +95,23 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 	}
 	live, spineIdx := part.live, part.index
 	aliasIDs, tombIDs := part.aliasIDs, part.tombIDs
+	if policy.filtered() {
+		eligible := make([]idxSpineEntry, 0, len(live))
+		for _, e := range live {
+			if int(e.confidence) >= ConfidenceLevel(*policy.minimum) {
+				eligible = append(eligible, e)
+			}
+		}
+		live = eligible
+		spineIdx = make(map[string]int, len(live))
+		for i := range live {
+			spineIdx[live[i].id] = i
+		}
+	}
 	if len(live) == 0 {
+		if err := stable(); err != nil {
+			return nil, err
+		}
 		if s.cfg.OnRecall != nil {
 			s.cfg.OnRecall(agentID, query, 0, time.Since(start))
 		}
@@ -77,8 +128,11 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 	// Vector search names its own candidates; they join the set so a fact the
 	// embedder likes is scored and returnable even when it shares no term with
 	// the query.
-	vectorRank := make(map[string]int, topK*2)
-	vecResults, _ := s.vectorSearch(ctx, agentID, effectiveQuery, topK*2)
+	vectorRank := make(map[string]int, min(vectorBudget(topK), len(live)))
+	vecResults, vecErr := s.vectorSearchWithPolicy(ctx, agentID, effectiveQuery, vectorBudget(topK), spineIdx, policy)
+	if vecErr != nil && (policy.filtered() || errors.Is(vecErr, errConfidenceQueryChanged)) {
+		return nil, vecErr
+	}
 	sort.SliceStable(vecResults, func(i, j int) bool {
 		if vecResults[i].Similarity != vecResults[j].Similarity {
 			return vecResults[i].Similarity > vecResults[j].Similarity
@@ -95,8 +149,8 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 	// Texts are read lazily and only for what a caller will actually see: the
 	// head of the ranking, plus whatever the weak-match diagnostic asks about.
 	// Nothing here loads a fact in order to score it.
-	loaded := make(map[string]Fact, topK*4)
-	tfByID := make(map[string]map[string]int, topK*4)
+	loaded := make(map[string]Fact, min(vectorBudget(topK), len(live)))
+	tfByID := make(map[string]map[string]int, min(vectorBudget(topK), len(live)))
 
 	// --- Signal 2: keyword relevance, computed from the index alone ---
 	//
@@ -127,7 +181,7 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 	if err := s.db.View(func(tx *bolt.Tx) error {
 		tb := idxBucketRO(tx, bucketIdxTerms, agentID)
 		for _, t := range uniqTerms {
-			df := idxDF(tb, t)
+			df := idxDFForCorpus(tb, t, spineIdx, policy.filtered())
 			dfCache[t] = df
 			if df == 0 {
 				continue
@@ -201,6 +255,10 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 		w = &d
 	}
 	fused := make([]entry, len(live))
+	var baseScores map[string]float64
+	if policy.weight != 0 {
+		baseScores = make(map[string]float64, len(live))
+	}
 	for i := range live {
 		id := live[i].id
 		rrf := w.Recency / (k + float64(i+1))
@@ -210,7 +268,11 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 		if r, hit := kwRank[id]; hit {
 			rrf += w.Keyword / (k + float64(r))
 		}
-		fused[i] = entry{id, rrf, live[i].tie}
+		if baseScores != nil {
+			baseScores[id] = rrf
+		}
+		factor := 1 + policy.weight*float64(int(live[i].confidence)-1)
+		fused[i] = entry{id, rrf * factor, live[i].tie}
 	}
 	sort.Slice(fused, func(i, j int) bool { return less(fused[i], fused[j]) })
 	allScored := make([]scored, len(fused))
@@ -299,7 +361,7 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 		for _, raw := range dedupTokens(tokenize(query)) {
 			for _, t := range tokenizeStem(raw, doStem) {
 				if _, have := dfOut[t]; !have {
-					dfOut[t] = idxDF(tb, t)
+					dfOut[t] = idxDFForCorpus(tb, t, spineIdx, policy.filtered())
 				}
 			}
 		}
@@ -313,7 +375,7 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 		effectiveQuery: effectiveQuery,
 		doStem:         doStem,
 		n:              len(live),
-		df:             func(t string) int { return s.idxDFCached(agentID, t, dfOut) },
+		df:             func(t string) int { return s.idxDFCachedForCorpus(agentID, t, dfOut, spineIdx, policy.filtered()) },
 		tf: func(id string) map[string]int {
 			if tf, hit := tfByID[id]; hit {
 				return tf
@@ -336,7 +398,15 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 		topK:   topK,
 	})
 
+	// No access or usage-alias writes have happened yet. A changed index
+	// delegates once to the scan, which loads one canonical snapshot and
+	// reuses this request's embedding. There is no retry loop under writers.
+	if err := stable(); err != nil {
+		return nil, err
+	}
 	return &recallPipeline{
+		policy:          policy,
+		baseScores:      baseScores,
 		facts:           factsOut,
 		factByID:        factByID,
 		ranked:          allScored,
@@ -593,7 +663,11 @@ func (s *Store) idxLoadHead(agentID string, ranked []scored, topK int, dst map[s
 		if len(distinct) >= topK || window >= len(ranked) {
 			return nil
 		}
-		window *= 2
+		if window > len(ranked)/2 {
+			window = len(ranked)
+		} else {
+			window *= 2
+		}
 	}
 }
 
@@ -601,16 +675,35 @@ func (s *Store) idxLoadHead(agentID string, ranked []scored, topK int, dst map[s
 // the neighbourhood asks about every co-occurring term it considers, and each
 // miss would otherwise be a fresh transaction.
 func (s *Store) idxDFCached(agentID, term string, cache map[string]int) int {
+	return s.idxDFCachedForCorpus(agentID, term, cache, nil, false)
+}
+
+func (s *Store) idxDFCachedForCorpus(agentID, term string, cache map[string]int, liveIdx map[string]int, filtered bool) int {
 	if v, hit := cache[term]; hit {
 		return v
 	}
 	v := 0
 	_ = s.db.View(func(tx *bolt.Tx) error {
-		v = idxDF(idxBucketRO(tx, bucketIdxTerms, agentID), term)
+		v = idxDFForCorpus(idxBucketRO(tx, bucketIdxTerms, agentID), term, liveIdx, filtered)
 		return nil
 	})
 	cache[term] = v
 	return v
+}
+
+// A filtered corpus needs document frequencies over the posting intersection,
+// before scoring. The intersection reads compact IDs, never canonical texts.
+func idxDFForCorpus(tb *bolt.Bucket, term string, liveIdx map[string]int, filtered bool) int {
+	if !filtered {
+		return idxDF(tb, term)
+	}
+	n := 0
+	idxWalkPostings(tb, term, func(id string, _ int) {
+		if _, ok := liveIdx[id]; ok {
+			n++
+		}
+	})
+	return n
 }
 
 // idxSeedDocs is the one-hop neighbourhood over posting lists: the facts

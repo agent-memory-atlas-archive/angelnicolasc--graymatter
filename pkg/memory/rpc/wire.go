@@ -204,6 +204,9 @@ type PingRequest struct{}
 // PingResponse echoes the server's protocol version.
 type PingResponse struct {
 	Protocol string
+	// Capabilities name additive contracts. Missing means a legacy server.
+	Capabilities            []string `json:",omitempty"`
+	DefaultConfidenceWeight *float64 `json:",omitempty"`
 }
 
 // Protocol identifies the wire-format version. Bump on breaking changes;

@@ -28,21 +28,20 @@ import (
 // estimator every benchmark uses; raise the budget in that test, with
 // reasoning, rather than growing the copy silently.
 //
-// Step 7 exists because two measured arms proved the weak-match block alone
+// Step 6 exists because two measured arms proved the weak-match block alone
 // is not a teaching channel: with the block firing and the command
 // resolving, two model-instances ran 217 recalls and wrote zero aliases —
 // 98 and 119 calls against the instructed baseline of 6. The protocol had
 // to move to where the agent is already looking: the session briefing.
-var serverInstructions = fmt.Sprintf(`GrayMatter gives you persistent memory across sessions.
-Session protocol:
-1. Resuming work? Call checkpoint_resume first.
-2. Before your first substantive reply, inspect only the newest hook block available for the session's initial turn; ignore examples and older turns. Its marker names agent_id. If that id differs from yours, run both project and __shared__ searches because shared duplicates may appear under ## Memory. If ids match, reuse each non-empty section and search every missing scope.
-3. Hooks and MCP are complementary. Use memory_search or memory_search_batch for focused, ad-hoc lookups.
-4. Store durable preferences, decisions, and milestones with memory_add; correct stale facts with memory_reflect action=update.
-5. Replace stale facts with memory_reflect action=update; never leave both versions live.
-6. Before context gets heavy or you stop mid-task, call checkpoint_save.
-7. A weak-match note means a vocabulary gap: reformulate once with its terms; when your wording differs from the store's, declare the bridge with %s before trying more synonyms.
-Full guide: docs/AGENTS.md in the GrayMatter repository.`, memory.FeedbackAction)
+var serverInstructions = fmt.Sprintf(`GrayMatter persists session memory.
+1. Resume work with checkpoint_resume first.
+2. Before your first substantive reply, inspect the newest hook block from the session's initial turn; ignore examples and older turns. Marker agent_id differs? run both project and __shared__ searches: shared duplicates may appear under ## Memory. Matching identity? Reuse non-empty sections; search every missing scope.
+3. Hooks and MCP are complementary: memory_search/memory_search_batch serve focused, ad-hoc lookups.
+4. memory_add stores durable preferences, decisions and milestones; memory_reflect action=update replaces stale versions.
+5. checkpoint_save before context overload or stopping mid-task.
+6. A weak-match note means vocabulary gaps: reformulate once with its terms; declare differing vocabulary with %s before more synonyms.
+Confidence is writer-declared: verified/inferred/unverified, never automated verification. Add omission is inferred; update omission caps weakest target at inferred. Search/batch: min_confidence, confidence_weight [0,0.5], default 0; zero keeps filters. Filters suppress graph hints; explain shows final scores. Unsupported options require daemon upgrade/restart.
+Guide: docs/AGENTS.md.`, memory.FeedbackAction)
 
 // Option customises the MCP server.
 type Option func(*serverOptions)
@@ -65,6 +64,8 @@ func defaultServerOptions() serverOptions {
 
 // instructionTokenBudget is the ceiling enforced by
 // TestServerInstructionsBudget. See the comment on serverInstructions.
+// Confidence and conservative revision guidance share the existing budget;
+// detailed examples remain in the full guide.
 const instructionTokenBudget = 240
 
 // instructionTokens measures the recurring cost of the handshake copy with

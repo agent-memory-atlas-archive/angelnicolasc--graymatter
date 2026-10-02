@@ -56,7 +56,7 @@ var (
 
 // indexVersion is bumped whenever the on-disk layout or the tokenisation
 // contract changes. A mismatch rebuilds rather than misreads.
-const indexVersion = 2
+const indexVersion = 3
 
 // postingSep separates a term from a fact ID inside the terms bucket. NUL
 // sorts below every byte a token can contain, so a prefix scan of
@@ -68,21 +68,26 @@ const postingSep = 0x00
 // before it has any text: a superseded fact leaves the corpus entirely, and an
 // alias fact is vocabulary rather than content and never enters the ranking.
 const (
-	idxFlagSuperseded = 1 << 0
-	idxFlagAlias      = 1 << 1
+	idxFlagSuperseded  = 1 << 0
+	idxFlagAlias       = 1 << 1
+	idxConfidenceShift = 2
+	idxConfidenceMask  = 3 << idxConfidenceShift
 )
 
 // indexState is the per-agent stamp that decides whether the index can be
 // trusted. Facts is the fact count at the last maintained write: a mismatch
 // against the live bucket means some writer bypassed maintenance, and the
-// index rebuilds instead of answering from a stale picture. Stemmed records
-// the fold the postings were built with, because StemKeywords changes what a
-// token is and an index built under one fold cannot answer under the other.
+// index rebuilds instead of answering from a stale picture. Writes made while
+// maintenance is disabled invalidate Version, including same-count changes
+// the count cannot detect. Only a full rebuild can restore that version.
+// Stemmed records the fold the postings were built with, because StemKeywords
+// changes what a token is and an index built under one fold cannot answer under
+// the other.
 type indexState struct {
 	Version int  `json:"version"`
 	Facts   int  `json:"facts"`
 	Stemmed bool `json:"stemmed"`
-	// Writes counts every maintained mutation, not just the ones that change
+	// Writes counts every maintained mutation or invalidation, not just changes to
 	// the fact count. A revision leaves Facts untouched while moving a fact's
 	// flags and possibly its timestamp, so a cache keyed on Facts alone would
 	// serve a spine that no longer matches the store. This is the key the
@@ -109,7 +114,9 @@ func postingKey(term, factID string) []byte {
 }
 
 // recencyValue packs everything the ranking needs about a fact that is not
-// its text: the two corpus-membership flags, and the fact's token count.
+// its text: the two corpus-membership flags, two bits of effective confidence,
+// and the fact's token count. Index v3 introduced the confidence bits; older
+// versions must rebuild before decoding them.
 //
 // The length is what turns the keyword signal into pure arithmetic. The
 // scorer divides a fact's tf-idf sum by its length, so with the length here
@@ -139,7 +146,7 @@ func decodeRecencyValue(v []byte) (flags byte, docLen int) {
 }
 
 func indexFlags(f Fact) byte {
-	var b byte
+	b := byte(ConfidenceLevel(f.Confidence)) << idxConfidenceShift
 	if f.IsSuperseded() {
 		b |= idxFlagSuperseded
 	}
@@ -268,6 +275,29 @@ func idxBucketRO(tx *bolt.Tx, root []byte, agentID string) *bolt.Bucket {
 	return parent.Bucket([]byte(agentID))
 }
 
+// idxInvalidate marks a previous index stale in the canonical write's own
+// transaction. Keep its generation so a rebuild cannot reuse a cached spine.
+// A store that never had an index pays no bucket creation or JSON write here.
+func idxInvalidate(tx *bolt.Tx, agentID string) error {
+	mb := tx.Bucket(bucketIdxMeta)
+	if mb == nil {
+		return nil
+	}
+	raw := mb.Get([]byte(agentID))
+	if raw == nil {
+		return nil
+	}
+	var st indexState
+	_ = json.Unmarshal(raw, &st)
+	st.Version = 0
+	st.Writes++
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return mb.Put([]byte(agentID), data)
+}
+
 // idxBumpCount moves the agent's recorded fact count by delta. The count is
 // the self-heal signal: a process compares it against the real bucket once,
 // the first time it recalls for that agent, and rebuilds on disagreement — so
@@ -289,10 +319,14 @@ func idxBumpCount(tx *bolt.Tx, agentID string, delta int, doStem bool) error {
 	st := indexState{Version: indexVersion, Stemmed: doStem}
 	if raw := mb.Get([]byte(agentID)); raw != nil {
 		var prev indexState
-		if json.Unmarshal(raw, &prev) == nil && prev.Version == indexVersion && prev.Stemmed == doStem {
-			st.Facts = prev.Facts
-			st.Writes = prev.Writes
+		if json.Unmarshal(raw, &prev) != nil || prev.Version != indexVersion || prev.Stemmed != doStem {
+			// A maintained write only updates its own entries. It cannot
+			// repair an index invalidated by earlier writes, an old layout,
+			// or a different tokenisation fold. Leave rebuilding to recall.
+			return idxInvalidate(tx, agentID)
 		}
+		st.Facts = prev.Facts
+		st.Writes = prev.Writes
 	}
 	st.Facts += delta
 	st.Writes++
@@ -396,13 +430,13 @@ func (s *Store) idxRebuild(agentID string) error {
 // --- query ------------------------------------------------------------------
 
 // idxSpineEntry is one live fact as the ranking sees it before any text is
-// read: identity, age and the two flags that decide whether it is in the
-// corpus at all.
+// read: identity, age, membership flags, effective confidence and token count.
 type idxSpineEntry struct {
-	id      string
-	created time.Time
-	flags   byte
-	docLen  int
+	id         string
+	created    time.Time
+	flags      byte
+	docLen     int
+	confidence byte
 	// tie is the entry's position in the OLDEST-first order, which is exactly
 	// the ranking's tie-break: equal scores go to the older fact, and to the
 	// lower fact ID when the timestamps match too.
@@ -433,10 +467,11 @@ func idxSpineAsc(tx *bolt.Tx, agentID string) []idxSpineEntry {
 		}
 		flags, docLen := decodeRecencyValue(v)
 		out = append(out, idxSpineEntry{
-			id:      string(k[8:]),
-			created: time.Unix(0, int64(binary.BigEndian.Uint64(k[:8]))).UTC(),
-			flags:   flags,
-			docLen:  docLen,
+			id:         string(k[8:]),
+			created:    time.Unix(0, int64(binary.BigEndian.Uint64(k[:8]))).UTC(),
+			flags:      flags,
+			docLen:     docLen,
+			confidence: (flags & idxConfidenceMask) >> idxConfidenceShift,
 		})
 	}
 	return out

@@ -32,10 +32,10 @@ func TestUpsertInstructions_CreatesFile(t *testing.T) {
 	}
 	for _, want := range []string{
 		instrBeginMarker, instrEndMarker, "weak-match", "hook recall ran",
-		"| `memory_search` | `agent_id`, `query` | `top_k` (default 8), `explain` |",
-		"| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default 8) |",
-		"| `memory_add` | `agent_id`, `text` | |",
-		"| `memory_reflect` | `action`, `agent_id` (or deprecated `agent` alias) | `text`, `target` (required by action) |",
+		"| `memory_search` | `agent_id`, `query` | `top_k` (default 8), `explain`, `min_confidence`, `confidence_weight` |",
+		"| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default 8), `min_confidence`, `confidence_weight` |",
+		"| `memory_add` | `agent_id`, `text` | `confidence` |",
+		"| `memory_reflect` | `action`, `agent_id` (or deprecated `agent` alias) | `text`, `target` (required by action), `confidence` (add/update only) |",
 		"| `memory_alias` | `agent_id`, `term`, `equivalents` | teach the store a vocabulary bridge |",
 		"| `checkpoint_save` | `agent_id` | `state` |",
 		"| `checkpoint_resume` | `agent_id` | `on_missing`: `\"error\"` (default) or `\"empty\"` when no checkpoint is ordinary control flow |",
@@ -555,7 +555,7 @@ func mustRead(t *testing.T, path string) []byte {
 // recurring copy GrayMatter ships: unlike the MCP handshake, which rides one
 // initialize per session, this text lives in CLAUDE.md / AGENTS.md and is read
 // on every turn of every session of every project it was installed into. The
-// handshake carries a 240-token ceiling for a 210-token string
+// handshake carries a separate 240-token ceiling for its compact instructions
 // (cmd/graymatter/internal/mcp/instructions.go); this is the same discipline at
 // the same ~14% headroom, applied where the cost is roughly four times larger.
 // Raise it in this constant, with reasoning, rather than letting the copy grow

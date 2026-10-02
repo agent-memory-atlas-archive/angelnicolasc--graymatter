@@ -22,12 +22,17 @@ import (
 //
 // Construct with Dial; release with Close.
 type Client struct {
-	rpc         *rpc.Client
-	conn        net.Conn
-	addr        string
-	callTimeout time.Duration
-	closeMu     sync.Mutex
-	closed      bool
+	rpc                       *rpc.Client
+	conn                      net.Conn
+	addr                      string
+	callTimeout               time.Duration
+	closeMu                   sync.Mutex
+	closed                    bool
+	capMu                     sync.Mutex
+	capKnown                  bool
+	capabilities              map[string]bool
+	defaultConfidenceWeight   float64
+	defaultConfidenceOverride bool
 }
 
 // DialOptions tunes how Dial finds and connects to a daemon.
@@ -50,6 +55,9 @@ type DialOptions struct {
 	// the server protocol matches Protocol. Defaults to true; turn off
 	// only for tests against a server you trust unconditionally.
 	PingOnDial bool
+	// DefaultConfidenceWeight overrides the negotiated product policy. A
+	// positive override requires confidence capabilities even with no flags.
+	DefaultConfidenceWeight *float64
 }
 
 // consolidateTimeout bounds Consolidate calls; the daemon-side work may
@@ -64,6 +72,11 @@ const consolidateTimeout = 5 * time.Minute
 // discovery file is missing or the listener refuses connections, so
 // spawn-on-connect logic can errors.Is for that case.
 func Dial(opts DialOptions) (*Client, error) {
+	if opts.DefaultConfidenceWeight != nil {
+		if err := (memory.RecallOptions{ConfidenceWeight: opts.DefaultConfidenceWeight}).Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if opts.DataDir == "" {
 		opts.DataDir = ".graymatter"
 	}
@@ -95,10 +108,15 @@ func Dial(opts DialOptions) (*Client, error) {
 	}
 
 	c := &Client{
-		rpc:         rpc.NewClientWithCodec(jsonrpc.NewClientCodec(conn)),
-		conn:        conn,
-		addr:        addr,
-		callTimeout: opts.CallTimeout,
+		rpc:                     rpc.NewClientWithCodec(jsonrpc.NewClientCodec(conn)),
+		conn:                    conn,
+		addr:                    addr,
+		callTimeout:             opts.CallTimeout,
+		defaultConfidenceWeight: memory.DefaultConfidenceWeight,
+	}
+	if opts.DefaultConfidenceWeight != nil {
+		c.defaultConfidenceWeight = *opts.DefaultConfidenceWeight
+		c.defaultConfidenceOverride = true
 	}
 
 	if opts.PingOnDial {
@@ -164,6 +182,27 @@ func (c *Client) Ping() error {
 	if resp.Protocol != Protocol {
 		return fmt.Errorf("rpc: protocol mismatch: server=%q client=%q", resp.Protocol, Protocol)
 	}
+	if resp.DefaultConfidenceWeight != nil {
+		if err := (memory.RecallOptions{ConfidenceWeight: resp.DefaultConfidenceWeight}).Validate(); err != nil {
+			c.capMu.Lock()
+			c.capKnown = false
+			c.capMu.Unlock()
+			return fmt.Errorf("rpc: invalid daemon default policy: %w", err)
+		}
+	}
+	c.capMu.Lock()
+	c.capabilities = make(map[string]bool, len(resp.Capabilities))
+	for _, capability := range resp.Capabilities {
+		c.capabilities[capability] = true
+	}
+	c.capKnown = true
+	if !c.defaultConfidenceOverride {
+		c.defaultConfidenceWeight = memory.DefaultConfidenceWeight
+		if resp.DefaultConfidenceWeight != nil {
+			c.defaultConfidenceWeight = *resp.DefaultConfidenceWeight
+		}
+	}
+	c.capMu.Unlock()
 	return nil
 }
 

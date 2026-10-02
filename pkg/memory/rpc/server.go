@@ -294,6 +294,11 @@ func (s *Server) PutShared(req *PutSharedRequest, resp *PutSharedResponse) error
 // Recall handles a remote AdvancedStore.Recall.
 func (s *Server) Recall(req *RecallRequest, resp *RecallResponse) error {
 	defer s.touch()
+	if recaller, ok := s.backend.(ConfidenceRecaller); ok && s.hasConfidenceCapability(ConfidenceRecallV1) && !s.rawLegacyEmptyTopK(req.TopK) {
+		result, err := recaller.RecallWithOptions(context.Background(), req.AgentID, req.Query, req.TopK, legacyRecallOptions())
+		resp.Facts = result.Facts
+		return err
+	}
 	facts, err := s.backend.Recall(context.Background(), req.AgentID, req.Query, req.TopK)
 	if err != nil {
 		return err
@@ -305,6 +310,11 @@ func (s *Server) Recall(req *RecallRequest, resp *RecallResponse) error {
 // RecallShared handles a remote AdvancedStore.RecallShared.
 func (s *Server) RecallShared(req *RecallSharedRequest, resp *RecallSharedResponse) error {
 	defer s.touch()
+	if recaller, ok := s.backend.(ConfidenceRecaller); ok && s.hasConfidenceCapability(ConfidenceRecallV1) && !s.rawLegacyEmptyTopK(req.TopK) {
+		result, err := recaller.RecallWithOptions(context.Background(), memory.SharedAgentID, req.Query, req.TopK, legacyRecallOptions())
+		resp.Facts = result.Facts
+		return err
+	}
 	facts, err := s.backend.RecallShared(context.Background(), req.Query, req.TopK)
 	if err != nil {
 		return err
@@ -317,6 +327,11 @@ func (s *Server) RecallShared(req *RecallSharedRequest, resp *RecallSharedRespon
 // plus the weak-match vocabulary block.
 func (s *Server) RecallDetailed(req *RecallDetailedRequest, resp *RecallDetailedResponse) error {
 	defer s.touch()
+	if recaller, ok := s.backend.(ConfidenceRecaller); ok && s.hasConfidenceCapability(ConfidenceRecallV1) && !s.rawLegacyEmptyTopK(req.TopK) {
+		result, err := recaller.RecallWithOptions(context.Background(), req.AgentID, req.Query, req.TopK, legacyRecallOptions())
+		resp.Facts, resp.Feedback = result.Facts, result.Feedback
+		return err
+	}
 	texts, feedback, err := s.backend.RecallDetailed(context.Background(), req.AgentID, req.Query, req.TopK)
 	if err != nil {
 		return err
@@ -340,6 +355,11 @@ func (s *Server) PutAlias(req *PutAliasRequest, resp *PutAliasResponse) error {
 // RecallAll handles a remote Store.RecallAll (agent + shared merged).
 func (s *Server) RecallAll(req *RecallAllRequest, resp *RecallAllResponse) error {
 	defer s.touch()
+	if recaller, ok := s.backend.(ConfidenceRecaller); ok && s.hasConfidenceCapability(ConfidenceRecallV1) && !s.rawLegacyEmptyTopK(req.TopK) {
+		result, err := recaller.RecallAllWithOptions(context.Background(), req.AgentID, req.Query, req.TopK, legacyRecallOptions())
+		resp.Facts = result.Facts
+		return err
+	}
 	facts, err := s.backend.RecallAll(context.Background(), req.AgentID, req.Query, req.TopK)
 	if err != nil {
 		return err
@@ -352,6 +372,14 @@ func (s *Server) RecallAll(req *RecallAllRequest, resp *RecallAllResponse) error
 // per-fact receipts.
 func (s *Server) RecallExplain(req *RecallExplainRequest, resp *RecallExplainResponse) error {
 	defer s.touch()
+	if recaller, ok := s.backend.(ConfidenceRecaller); ok && s.hasConfidenceCapability(ConfidenceRecallV1) && !s.rawLegacyEmptyTopK(req.TopK) {
+		result, err := recaller.RecallExplainWithOptions(context.Background(), req.AgentID, req.Query, req.TopK, legacyRecallOptions())
+		for i := range result.Receipts {
+			result.Receipts[i].Ranking = nil
+		}
+		resp.Receipts = result.Receipts
+		return err
+	}
 	receipts, err := s.backend.RecallExplain(context.Background(), req.AgentID, req.Query, req.TopK)
 	if err != nil {
 		return err
@@ -428,6 +456,12 @@ func (s *Server) PendingVectorCount(req *PendingVectorCountRequest, resp *Pendin
 func (s *Server) Ping(req *PingRequest, resp *PingResponse) error {
 	defer s.touch()
 	resp.Protocol = Protocol
+	resp.Capabilities = s.confidenceCapabilities()
+	weight := memory.DefaultConfidenceWeight
+	if provider, ok := s.backend.(DefaultConfidenceProvider); ok {
+		weight = provider.DefaultConfidenceWeight()
+	}
+	resp.DefaultConfidenceWeight = &weight
 	return nil
 }
 

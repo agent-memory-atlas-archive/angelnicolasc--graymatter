@@ -166,13 +166,13 @@ func TestToolSchemaContract(t *testing.T) {
 		required []string
 	}
 	want := map[string]paramSpec{
-		"memory_search":       {props: []string{"agent_id", "query", "top_k", "explain"}, required: []string{"agent_id", "query"}},
-		"memory_search_batch": {props: []string{"agent_id", "queries", "top_k"}, required: []string{"agent_id", "queries"}},
-		"memory_add":          {props: []string{"agent_id", "text"}, required: []string{"agent_id", "text"}},
+		"memory_search":       {props: []string{"agent_id", "query", "top_k", "explain", "min_confidence", "confidence_weight"}, required: []string{"agent_id", "query"}},
+		"memory_search_batch": {props: []string{"agent_id", "queries", "top_k", "min_confidence", "confidence_weight"}, required: []string{"agent_id", "queries"}},
+		"memory_add":          {props: []string{"agent_id", "text", "confidence"}, required: []string{"agent_id", "text"}},
 		"memory_alias":        {props: []string{"agent_id", "term", "equivalents"}, required: []string{"agent_id", "term", "equivalents"}},
 		"checkpoint_save":     {props: []string{"agent_id", "state"}, required: []string{"agent_id"}},
 		"checkpoint_resume":   {props: []string{"agent_id", "on_missing"}, required: []string{"agent_id"}},
-		"memory_reflect":      {props: []string{"action", "agent", "agent_id", "text", "target"}, required: []string{"action"}},
+		"memory_reflect":      {props: []string{"action", "agent", "agent_id", "text", "target", "confidence"}, required: []string{"action"}},
 	}
 
 	for name, spec := range want {

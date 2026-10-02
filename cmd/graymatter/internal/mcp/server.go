@@ -391,9 +391,11 @@ func (s *Server) registerTools() {
 			mcp.WithBoolean("explain",
 				mcp.Description("Set true to receive per-fact receipts instead of bare text: each fact under `explained` carries the per-signal ranks (vector/keyword/recency, 0 = signal absent) that produced its fused RRF score, the stored weight, its age in days, and provenance (fact_id, written_at, tombstone state, and `supersedes` — the ids of the earlier versions this fact replaced, empty when it revised nothing). The ranking is identical either way — explain only reads it out. Use it when the caller wants to know WHY a fact was returned."),
 			),
+			confidenceFilterSchema(),
+			confidenceWeightSchema(),
 			outputSchemaOf[searchResult](),
 		),
-		s.handleMemorySearch,
+		s.confidenceGuard("memory_search", s.handleMemorySearch),
 	)
 
 	// memory_search_batch
@@ -422,9 +424,11 @@ func (s *Server) registerTools() {
 				mcp.Description("Optional cap on facts returned per query. Omitted or non-positive uses the store default."),
 				mcp.DefaultNumber(8),
 			),
+			confidenceFilterSchema(),
+			confidenceWeightSchema(),
 			outputSchemaOf[batchResult](),
 		),
-		s.handleMemorySearchBatchTool,
+		s.confidenceGuard("memory_search_batch", s.handleMemorySearchBatchTool),
 	)
 
 	// memory_add
@@ -441,9 +445,10 @@ func (s *Server) registerTools() {
 				mcp.Required(),
 				mcp.Description("The fact to remember: one atomic, self-contained sentence."),
 			),
+			confidenceWriteSchema(),
 			outputSchemaOf[addResult](),
 		),
-		s.handleMemoryAdd,
+		s.confidenceGuard("memory_add", s.handleMemoryAdd),
 	)
 
 	// memory_alias
@@ -473,7 +478,7 @@ func (s *Server) registerTools() {
 			),
 			outputSchemaOf[aliasResult](),
 		),
-		s.handleMemoryAlias,
+		s.confidenceGuard("memory_alias", s.handleMemoryAlias),
 	)
 
 	// checkpoint_save
@@ -491,7 +496,7 @@ func (s *Server) registerTools() {
 			),
 			outputSchemaOf[checkpointSaveResult](),
 		),
-		s.handleCheckpointSave,
+		s.confidenceGuard("checkpoint_save", s.handleCheckpointSave),
 	)
 
 	// checkpoint_resume
@@ -516,7 +521,7 @@ func (s *Server) registerTools() {
 			),
 			checkpointResumeOutputSchema(),
 		),
-		s.handleCheckpointResume,
+		s.confidenceGuard("checkpoint_resume", s.handleCheckpointResume),
 	)
 
 	// memory_reflect
@@ -558,6 +563,7 @@ func (s *Server) registerTools() {
       "type": "string",
       "description": "The fact text for add/update, the fact to forget or pin (alternative to target), or the source node ID for link."
     },
+    "confidence": {"type": "string", "enum": ["verified", "inferred", "unverified"], "description": "Writer-declared confidence, only for add/update. Omitted add is legacy inferred; omitted update is min(inferred, effective target confidence)."},
     "target": {
       "type": "string",
       "description": "For update: the fact text to supersede. For forget/pin/unpin: the fact (or pass it via text). For link: the target node ID."
@@ -570,7 +576,7 @@ func (s *Server) registerTools() {
   ],
   "additionalProperties": false
 }`)
-	s.mcpSrv.AddTool(reflectTool, s.handleMemoryReflect)
+	s.mcpSrv.AddTool(reflectTool, s.confidenceGuard("memory_reflect", s.handleMemoryReflect))
 }
 
 // toolError wraps an error as an MCP tool result with isError=true.

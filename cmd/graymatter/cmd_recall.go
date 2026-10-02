@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/angelnicolasc/graymatter/pkg/memory"
+	"github.com/angelnicolasc/graymatter/pkg/memory/rpc"
 )
 
 func recallCmd() *cobra.Command {
@@ -19,6 +20,8 @@ func recallCmd() *cobra.Command {
 	var all bool
 	var explain bool
 	var extra []string
+	var minimum string
+	var weight float64
 
 	cmd := &cobra.Command{
 		Use:   "recall <agent-id> <query>",
@@ -29,15 +32,32 @@ recall (semantic + keyword + recency).
 With --explain, each returned fact carries its receipt: the per-signal
 ranks that produced its fused score, its stored weight and age, and its
 provenance (fact ID, written-at instant, tombstone state). The same
-ranking runs either way — explain only reads it out.`,
+ranking runs either way — explain only reads it out.
+
+--min-confidence filters before ranking. --confidence-weight applies the
+bounded preference base RRF * (1 + weight*c), where c is 1 for verified,
+0 for inferred and -1 for unverified. The opt-in default is zero; confidence
+is a writer declaration, not automated verification.`,
 		Example: `  graymatter recall "sales-closer" "follow up Maria"
   graymatter recall "code-reviewer" "nil pointer" --top-k 5
   graymatter recall --shared "global preferences"
   graymatter recall --all "sales-closer" "Maria follow up"
   graymatter recall "sales-closer" "Maria" --explain --json
-  graymatter recall "backend" --query "TLS floor" --query "who owns billing" --query "release cadence"`,
+  graymatter recall "backend" --query "TLS floor" --query "who owns billing" --query "release cadence"
+  graymatter recall "backend" "TLS floor" --min-confidence verified --confidence-weight 0.1 --explain --json`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts, err := cliRecallOptions(cmd, minimum, weight)
+			if err != nil {
+				return err
+			}
+			if explain && (shared || all || len(extra) > 0) {
+				return fmt.Errorf("--explain supports a single agent-scoped query only")
+			}
+			if shared && all {
+				return fmt.Errorf("--shared and --all are mutually exclusive")
+			}
+			settings := recallSettings{options: opts, shared: shared, all: all}
 			// One call, many questions. Every extra recall an agent has to
 			// issue is a round trip through its model, so a caller holding
 			// several open questions pays in turns rather than in store time.
@@ -47,13 +67,13 @@ ranking runs either way — explain only reads it out.`,
 				if len(args) == 2 {
 					queries = append([]string{args[1]}, queries...)
 				}
-				return runRecallBatch(cmd, args[0], queries, topK)
+				return runRecallBatch(cmd, args[0], queries, topK, settings)
+			}
+			if shared && len(args) == 1 {
+				args = []string{memory.SharedAgentID, args[0]}
 			}
 			if len(args) != 2 {
 				return fmt.Errorf("a query is required (or pass --query one or more times)")
-			}
-			if explain && (shared || all) {
-				return fmt.Errorf("--explain supports agent-scoped recall only (--shared/--all merge namespaces whose merged entries have no single receipt)")
 			}
 			agentID, query := args[0], args[1]
 			store, err := openStore()
@@ -69,7 +89,7 @@ ranking runs either way — explain only reads it out.`,
 
 			// topK <= 0 means "store default" on every path.
 			if explain {
-				return runRecallExplain(cmd, store, agentID, query, topK)
+				return runRecallExplain(cmd, store, agentID, query, topK, opts)
 			}
 
 			var facts []string
@@ -79,33 +99,36 @@ ranking runs either way — explain only reads it out.`,
 			// merge would point at terms from a store the caller did not ask
 			// about.
 			var feedback string
-			switch {
-			case all:
-				facts, err = store.RecallAll(ctx, agentID, query, topK)
+			result, err := cliRecall(ctx, store, agentID, query, topK, settings)
+			facts, feedback = result.Facts, result.Feedback
+			scope = agentID
+			if all {
 				scope = "all"
-			case shared:
-				facts, err = store.RecallShared(ctx, query, topK)
+			} else if shared {
 				scope = "shared"
-			default:
-				// Identical facts in identical order to Recall, plus the block.
-				facts, feedback, err = store.RecallDetailed(ctx, agentID, query, topK)
-				scope = agentID
 			}
 			if err != nil {
 				return err
 			}
 
 			if jsonOut {
-				data, _ := json.Marshal(map[string]any{
+				out := map[string]any{
 					"agent_id": agentID,
 					"scope":    scope,
 					"query":    query,
 					"facts":    facts,
 					"count":    len(facts),
 					"feedback": feedback,
-				})
+				}
+				if result.Retrieval != nil {
+					out["retrieval"] = result.Retrieval
+				}
+				data, _ := json.Marshal(out)
 				fmt.Println(string(data))
 				return nil
+			}
+			if result.Retrieval != nil {
+				fmt.Println(result.Retrieval.Text())
 			}
 
 			if len(facts) == 0 {
@@ -136,6 +159,8 @@ ranking runs either way — explain only reads it out.`,
 	cmd.Flags().BoolVar(&all, "all", false, "recall from both agent and shared memory, merged")
 	cmd.Flags().BoolVar(&explain, "explain", false, "return one receipt per fact: per-signal ranks, fused score, weight, age, provenance")
 	cmd.Flags().StringArrayVar(&extra, "query", nil, "an extra query to answer in the same call; repeat for several, answered concurrently")
+	cmd.Flags().StringVar(&minimum, "min-confidence", "", "minimum effective confidence: unverified, inferred or verified; suppresses graph hints")
+	cmd.Flags().Float64Var(&weight, "confidence-weight", memory.DefaultConfidenceWeight, "confidence preference in [0,0.5]; zero preserves an explicit filter")
 	return cmd
 }
 
@@ -150,12 +175,23 @@ ranking runs either way — explain only reads it out.`,
 // The merged block is what a caller reads: one deduplicated, best-first list,
 // so a fact three questions share costs one slot in the context rather than
 // three. --json additionally carries the per-query breakdown.
-func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK int) error {
+func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK int, settingsArg ...recallSettings) error {
+	var settings recallSettings
+	if len(settingsArg) > 0 {
+		settings = settingsArg[0]
+	}
 	store, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	opts, useOptions, err := cliBatchRecallOptions(store, settings.options)
+	if err != nil {
+		return err
+	}
+	// Fully omitted zero policy uses the compatibility endpoints, keeping one
+	// zero policy even if the daemon restarts with a different default mid-batch.
+	settings.options, settings.legacy = opts, !useOptions
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -163,9 +199,10 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 	}
 
 	type row struct {
-		Query string   `json:"query"`
-		Facts []string `json:"facts"`
-		Error string   `json:"error,omitempty"`
+		Query     string                    `json:"query"`
+		Facts     []string                  `json:"facts"`
+		Error     string                    `json:"error,omitempty"`
+		Retrieval *memory.RetrievalMetadata `json:"retrieval,omitempty"`
 	}
 	rows := make([]row, len(queries))
 	limit := runtime.GOMAXPROCS(0)
@@ -181,13 +218,13 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			rows[i].Query = q
-			facts, err := store.Recall(ctx, agentID, q, topK)
+			result, err := cliRecall(ctx, store, agentID, q, topK, settings)
 			if err != nil {
 				// One bad query must not lose the answers to the others.
 				rows[i].Error = err.Error()
 				return
 			}
-			rows[i].Facts = facts
+			rows[i].Facts, rows[i].Retrieval = result.Facts, result.Retrieval
 		}(i, q)
 	}
 	wg.Wait()
@@ -197,24 +234,64 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 		batch = append(batch, memory.BatchResult{Query: r.Query, Facts: r.Facts})
 	}
 	merged := memory.MergedFacts(batch)
+	var retrieval *memory.RetrievalMetadata
+	var failures []string
+	for _, r := range rows {
+		if r.Retrieval != nil {
+			retrieval = r.Retrieval
+		}
+		if r.Error != "" {
+			failures = append(failures, r.Error)
+		}
+	}
+	var batchError error
+	if len(rows) > 0 && len(failures) == len(rows) {
+		batchError = fmt.Errorf("all recall queries failed: %s", strings.Join(failures, "; "))
+	}
+	scope := agentID
+	if settings.all {
+		scope = "all"
+	} else if settings.shared {
+		scope = "shared"
+	}
 
 	if jsonOut {
-		data, _ := json.Marshal(map[string]any{
+		out := map[string]any{
 			"agent_id":  agentID,
 			"queries":   len(queries),
 			"count":     len(merged),
 			"merged":    merged,
 			"per_query": rows,
-		})
+		}
+		if settings.all || settings.shared {
+			out["scope"] = scope
+		}
+		if retrieval != nil {
+			out["retrieval"] = retrieval
+		}
+		data, _ := json.Marshal(out)
 		fmt.Println(string(data))
-		return nil
+		return batchError
 	}
 
 	if len(merged) == 0 {
-		if !quiet {
-			fmt.Printf("No memories found for agent %q matching any of the %d queries.\n", agentID, len(queries))
+		if !quiet && len(failures) == 0 {
+			switch {
+			case settings.shared:
+				fmt.Printf("No memories found in shared memory matching any of the %d queries.\n", len(queries))
+			case settings.all:
+				fmt.Printf("No memories found for agent %q or shared memory matching any of the %d queries.\n", agentID, len(queries))
+			default:
+				fmt.Printf("No memories found for agent %q matching any of the %d queries.\n", agentID, len(queries))
+			}
 		}
-		return nil
+		if retrieval != nil {
+			fmt.Println(retrieval.Text())
+		}
+		if len(failures) > 0 {
+			fmt.Printf("%d queries failed: %s\n", len(failures), strings.Join(failures, "; "))
+		}
+		return batchError
 	}
 	// Grouped by query, not as one merged block.
 	//
@@ -227,10 +304,13 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 	// the thing the caller cannot reconstruct, so it is what the default
 	// rendering preserves.
 	if !quiet {
-		fmt.Printf("# Memory context [%s] / %d queries, %d distinct facts\n", agentID, len(queries), len(merged))
+		fmt.Printf("# Memory context [%s] / %d queries, %d distinct facts\n", scope, len(queries), len(merged))
 	}
 	for _, r := range rows {
 		fmt.Printf("\n## %s\n", r.Query)
+		if r.Retrieval != nil {
+			fmt.Println(r.Retrieval.Text())
+		}
 		switch {
 		case r.Error != "":
 			fmt.Printf("! failed: %s\n", r.Error)
@@ -240,28 +320,51 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 			fmt.Println(strings.Join(r.Facts, "\n"))
 		}
 	}
-	return nil
+	return batchError
 }
 
 // runRecallExplain is the --explain path. The receipt payload is the stable
 // contract documented in docs/api-stability.md ("Added in v0.17.0"); the
 // human-readable rendering is a convenience on top of it.
-func runRecallExplain(cmd *cobra.Command, store cliStore, agentID, query string, topK int) error {
-	receipts, err := store.RecallExplain(context.Background(), agentID, query, topK)
+func runRecallExplain(cmd *cobra.Command, store cliStore, agentID, query string, topK int, options ...memory.RecallOptions) error {
+	var opts memory.RecallOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	var receipts []memory.RecallReceipt
+	var retrieval *memory.RetrievalMetadata
+	var err error
+	if useCLIConfidenceRecall(store, opts) {
+		backend, ok := store.(rpc.ConfidenceRecaller)
+		if !ok {
+			return memory.ErrConfidenceUnsupported
+		}
+		result, callErr := backend.RecallExplainWithOptions(cmd.Context(), agentID, query, topK, opts)
+		receipts, retrieval, err = result.Receipts, result.Retrieval, callErr
+	} else {
+		receipts, err = store.RecallExplain(cmd.Context(), agentID, query, topK)
+	}
 	if err != nil {
 		return err
 	}
 
 	if jsonOut {
-		data, _ := json.Marshal(map[string]any{
+		out := map[string]any{
 			"agent_id": agentID,
 			"scope":    agentID,
 			"query":    query,
 			"count":    len(receipts),
 			"facts":    receipts,
-		})
+		}
+		if retrieval != nil {
+			out["retrieval"] = retrieval
+		}
+		data, _ := json.Marshal(out)
 		fmt.Println(string(data))
 		return nil
+	}
+	if retrieval != nil {
+		fmt.Println(retrieval.Text())
 	}
 
 	if len(receipts) == 0 {
@@ -280,6 +383,9 @@ func runRecallExplain(cmd *cobra.Command, store cliStore, agentID, query string,
 			r.Ranks.FusedScore, r.Ranks.VectorRank, r.Ranks.KeywordRank, r.Ranks.RecencyRank,
 			r.Ranks.K, r.Weight, r.AgeDays, r.Provenance.WrittenAt.Format("2006-01-02"))
 		fmt.Printf("   fact_id %s\n", r.Provenance.FactID)
+		if r.Ranking != nil {
+			fmt.Printf("   final score %.8f = base %.8f * factor %g; effective confidence %s, weight %g, policy %s\n", r.Ranking.FinalScore, r.Ranking.BaseScore, r.Ranking.Factor, r.Ranking.EffectiveConfidence, r.Ranking.ConfidenceWeight, r.Ranking.Policy)
+		}
 		// A corrected value is worth more than the value alone: it says the
 		// store held something else and that this replaced it. Without the
 		// line, a revision is indistinguishable from a fact nobody ever

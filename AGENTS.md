@@ -8,15 +8,38 @@ This repo **is** a memory system for AI agents. While you work here, you also ge
 
 | Tool | Required params | Optional |
 |------|----------------|----------|
-| `memory_search` | `agent_id`, `query` | `top_k` (default `8`), `explain` (boolean, default `false`) |
-| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`) |
-| `memory_add` | `agent_id`, `text` | — |
+| `memory_search` | `agent_id`, `query` | `top_k` (default `8`), `explain` (boolean, default `false`), `min_confidence`, `confidence_weight` |
+| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`), `min_confidence`, `confidence_weight` |
+| `memory_add` | `agent_id`, `text` | `confidence` |
 | `memory_alias` | `agent_id`, `term`, `equivalents` | — |
 | `memory_reflect` | `action` (`add`\|`update`\|`forget`\|`link`\|`pin`\|`unpin`), plus at least one of **`agent_id`** (canonical) or `agent` (deprecated alias; `agent_id` wins when both are set) | `text`, `target` (which one is required depends on `action` — for `forget`/`pin`/`unpin`, either works) |
 | `checkpoint_save` | `agent_id` | `state` (JSON-encoded string) |
 | `checkpoint_resume` | `agent_id` | `on_missing` (enum `error`\|`empty`, default `error`) |
 
 > **`memory_reflect` uses `agent_id` (canonical since ADR-014).** The other six also use `agent_id`. The deprecated alias `agent` is still accepted for compatibility; `agent_id` wins when both are set.
+
+`memory_reflect` also accepts `confidence` for `add` and `update` only.
+
+## Confidence options (Unreleased)
+
+These options are implemented on main and are unavailable in v0.19.1.
+`verified`, `inferred` and `unverified` are the writer's declarations, not
+verification performed by GrayMatter. An omitted label on add remains legacy
+inferred; an omitted label on update is the minimum of inferred and the
+effective confidence of every live target. A revision does not inherit a pin.
+Generated summaries follow that same conservative rule; facts produced by
+LLM extraction are unverified. Pin, decay and access tracking preserve labels.
+
+Search and batch accept `min_confidence` before ranking and top-k, and a finite
+`confidence_weight` in `[0, 0.5]`. The default remains zero. Explicit zero
+preserves an explicit filter. A filter suppresses graph neighbor hints, which
+have no confidence receipts. New options require a supporting daemon; an
+unsupported request reports an update/restart error. Read the effective policy
+and final score from retrieval metadata and explain, not just the label.
+
+Do not supply confidence on forget/pin/unpin/link, or search options on writes.
+Explicit null, empty labels, unknown labels and incorrect types are errors.
+See [the complete contract](docs/AGENTS.md#confidence-options-unreleased).
 
 ## When to call which
 

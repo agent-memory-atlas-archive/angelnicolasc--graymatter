@@ -12,11 +12,37 @@ const workflowDir = "../../.github/workflows"
 
 func read(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(workflowDir, name+".yml"))
+	return readWorkflow(t, filepath.Join(workflowDir, name+".yml"))
+}
+
+func readWorkflow(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(data)
+	// Git may check out YAML with CRLF on Windows. Keep every contract and
+	// action pin exact while comparing the same source lines on every OS.
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
+}
+
+func TestReadWorkflowLineEndings(t *testing.T) {
+	const source = "on:\n  pull_request:\npermissions:\n  contents: read\nsteps:\n  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n"
+	for _, ending := range []string{"\n", "\r\n"} {
+		name := "LF"
+		if ending == "\r\n" {
+			name = "CRLF"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "fixture.yml")
+			if err := os.WriteFile(path, []byte(strings.ReplaceAll(source, "\n", ending)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if body := readWorkflow(t, path); body != source {
+				t.Fatalf("workflow source or action pin changed after reading %s: %q", name, body)
+			}
+		})
+	}
 }
 
 func contains(t *testing.T, body string, fragments ...string) {
@@ -54,11 +80,8 @@ func TestActionPins(t *testing.T) {
 	}
 	seen := make(map[string]bool)
 	for _, file := range files {
-		body, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, match := range re.FindAllStringSubmatch(string(body), -1) {
+		body := readWorkflow(t, file)
+		for _, match := range re.FindAllStringSubmatch(body, -1) {
 			want, ok := expected[match[1]]
 			if !ok {
 				t.Errorf("%s uses unreviewed action %s", file, match[1])
@@ -82,11 +105,8 @@ func TestGoCacheInputs(t *testing.T) {
 	}
 	count, install := 0, 0
 	for _, file := range files {
-		body, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		lines := strings.Split(string(body), "\n")
+		body := readWorkflow(t, file)
+		lines := strings.Split(body, "\n")
 		for i, line := range lines {
 			if !strings.Contains(line, "uses: actions/setup-go@") {
 				continue

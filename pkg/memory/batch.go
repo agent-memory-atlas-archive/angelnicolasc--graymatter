@@ -23,8 +23,10 @@ import (
 // batch adds is the fan-out and a merged view (see MergedFacts) for callers
 // that want one deduplicated block instead of k separate lists.
 type BatchResult struct {
-	Query string   `json:"query"`
-	Facts []string `json:"facts"`
+	Query     string             `json:"query"`
+	Facts     []string           `json:"facts"`
+	Feedback  string             `json:"feedback,omitempty"`
+	Retrieval *RetrievalMetadata `json:"retrieval,omitempty"`
 	// Err carries a per-query failure. One bad query does not fail the batch:
 	// an agent asking six questions should get the five answers that worked,
 	// not a single error for all of them.
@@ -40,6 +42,26 @@ type BatchResult struct {
 // parallel-safe, but an unbounded fan-out on a 200-query batch would create
 // 200 simultaneous bbolt read transactions and vector searches for no gain.
 func (s *Store) BatchRecall(ctx context.Context, agentID string, queries []string, topK int) ([]BatchResult, error) {
+	policy, err := s.resolveRecallPolicy(RecallOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if topK < 0 {
+		topK = 0
+	}
+	return s.batchRecallWithPolicy(ctx, agentID, queries, topK, policy)
+}
+
+func (s *Store) BatchRecallWithOptions(ctx context.Context, agentID string, queries []string, topK int, opts RecallOptions) ([]BatchResult, error) {
+	policy, err := s.resolveRecallPolicy(opts)
+	if err != nil {
+		return nil, err
+	}
+	topK = recallTopK(topK)
+	return s.batchRecallWithPolicy(ctx, agentID, queries, topK, policy)
+}
+
+func (s *Store) batchRecallWithPolicy(ctx context.Context, agentID string, queries []string, topK int, policy recallPolicy) ([]BatchResult, error) {
 	if len(queries) == 0 {
 		return nil, nil
 	}
@@ -54,15 +76,23 @@ func (s *Store) BatchRecall(ctx context.Context, agentID string, queries []strin
 		wg.Add(1)
 		go func(i int, q string) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				out[i] = BatchResult{Query: q, Err: ctx.Err(), Retrieval: policy.retrieval()}
+				return
+			}
 			defer func() { <-sem }()
-			out[i] = BatchResult{Query: q}
-			facts, err := s.Recall(ctx, agentID, q, topK)
+			out[i] = BatchResult{Query: q, Retrieval: policy.retrieval()}
+			facts, feedback, err := s.recallDetailedWithPolicy(ctx, agentID, q, topK, policy)
 			if err != nil {
 				out[i].Err = err
 				return
 			}
 			out[i].Facts = facts
+			if policy.metadata {
+				out[i].Feedback = feedback
+			}
 		}(i, q)
 	}
 	wg.Wait()

@@ -1,0 +1,13 @@
+goos: windows
+goarch: amd64
+pkg: github.com/angelnicolasc/graymatter/pkg/memory
+cpu: AMD Ryzen 5 3400G with Radeon Vega Graphics
+BenchmarkConfidenceRecall/600/legacy-8         	     100	   1457420 ns/op	         8.000 results	  106026 B/op	     546 allocs/op
+BenchmarkConfidenceRecall/600/detailed-8       	     100	   1841094 ns/op	         8.000 results	  106062 B/op	     547 allocs/op
+BenchmarkConfidenceRecall/5000/legacy-8        	     100	   2944114 ns/op	         8.000 results	  408599 B/op	     924 allocs/op
+BenchmarkConfidenceRecall/5000/detailed-8      	     100	   2925756 ns/op	         8.000 results	  408593 B/op	     900 allocs/op
+BenchmarkConfidenceRecall/10000/legacy-8       	     100	   4307274 ns/op	         8.000 results	  748178 B/op	    1012 allocs/op
+BenchmarkConfidenceRecall/10000/detailed-8     	     100	   4210446 ns/op	         8.000 results	  747583 B/op	    1011 allocs/op
+BenchmarkConfidenceRecall/30000/legacy-8       	     100	   8204580 ns/op	         8.000 results	 2058743 B/op	    1387 allocs/op
+BenchmarkConfidenceRecall/30000/detailed-8     	     100	   8137861 ns/op	         8.000 results	 2058877 B/op	    1387 allocs/op
+PASS

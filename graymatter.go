@@ -101,6 +101,7 @@ func NewWithConfig(cfg Config) (*Memory, error) {
 		ReadOnly:                cfg.ReadOnly,
 		StrictWrite:             cfg.StrictWrite,
 		SignalWeights:           cfg.SignalWeights,
+		ConfidenceWeight:        cfg.ConfidenceWeight,
 		MinRelevance:            cfg.MinRelevance,
 		StemKeywords:            cfg.StemKeywords,
 		UsageAliasLearning:      cfg.UsageAliasLearning,
@@ -156,6 +157,85 @@ func (m *Memory) Remember(ctx context.Context, agentID, text string) error {
 		m.store.LaunchAsyncConsolidate(agentID, m.cfg)
 	}
 	return nil
+}
+
+// RememberWithOptions stores text and its explicit confidence atomically and
+// returns its durable identity. Automatic consolidation starts after commit.
+func (m *Memory) RememberWithOptions(ctx context.Context, agentID, text string, options memory.WriteOptions) (memory.Fact, error) {
+	return m.rememberWithOptions(ctx, agentID, text, options, m.cfg.AsyncConsolidate)
+}
+
+func (m *Memory) rememberWithOptions(ctx context.Context, agentID, text string, options memory.WriteOptions, consolidate bool) (memory.Fact, error) {
+	if err := options.Validate(); err != nil {
+		return memory.Fact{}, err
+	}
+	if m.store == nil {
+		return memory.Fact{}, fmt.Errorf("graymatter: remember: unavailable store: %w", m.initErr)
+	}
+	fact, err := m.store.PutWithOptionsReturningFact(ctx, agentID, text, options)
+	if err != nil {
+		return memory.Fact{}, fmt.Errorf("graymatter: remember: %w", err)
+	}
+	if consolidate {
+		m.store.LaunchAsyncConsolidate(agentID, m.cfg)
+	}
+	return fact, nil
+}
+
+// RememberSharedWithOptions writes confidence metadata in the shared namespace.
+func (m *Memory) RememberSharedWithOptions(ctx context.Context, text string, options memory.WriteOptions) (memory.Fact, error) {
+	// RememberShared's established policy does not launch consolidation.
+	return m.rememberWithOptions(ctx, memory.SharedAgentID, text, options, false)
+}
+
+// RecallWithOptions applies a per-call confidence policy using configured TopK.
+func (m *Memory) RecallWithOptions(ctx context.Context, agentID, query string, options memory.RecallOptions) (memory.RecallResult, error) {
+	if err := options.Validate(); err != nil {
+		return memory.RecallResult{}, err
+	}
+	if m.store == nil {
+		return memory.RecallResult{}, fmt.Errorf("graymatter: recall: unavailable store: %w", m.initErr)
+	}
+	result, err := m.store.RecallWithOptions(ctx, agentID, query, m.cfg.TopK, options)
+	if err != nil {
+		return memory.RecallResult{}, fmt.Errorf("graymatter: recall: %w", err)
+	}
+	return result, nil
+}
+
+// RecallExplainWithOptions includes reconstructible ranking receipts.
+func (m *Memory) RecallExplainWithOptions(ctx context.Context, agentID, query string, options memory.RecallOptions) (memory.RecallExplainResult, error) {
+	if err := options.Validate(); err != nil {
+		return memory.RecallExplainResult{}, err
+	}
+	if m.store == nil {
+		return memory.RecallExplainResult{}, fmt.Errorf("graymatter: recall explain: unavailable store: %w", m.initErr)
+	}
+	result, err := m.store.RecallExplainWithOptions(ctx, agentID, query, m.cfg.TopK, options)
+	if err != nil {
+		return memory.RecallExplainResult{}, fmt.Errorf("graymatter: recall explain: %w", err)
+	}
+	return result, nil
+}
+
+// RecallSharedWithOptions applies the policy to shared memory.
+func (m *Memory) RecallSharedWithOptions(ctx context.Context, query string, options memory.RecallOptions) (memory.RecallResult, error) {
+	return m.RecallWithOptions(ctx, memory.SharedAgentID, query, options)
+}
+
+// RecallAllWithOptions applies the policy independently to both namespaces.
+func (m *Memory) RecallAllWithOptions(ctx context.Context, agentID, query string, options memory.RecallOptions) (memory.RecallResult, error) {
+	if err := options.Validate(); err != nil {
+		return memory.RecallResult{}, err
+	}
+	if m.store == nil {
+		return memory.RecallResult{}, fmt.Errorf("graymatter: recall all: unavailable store: %w", m.initErr)
+	}
+	result, err := m.store.RecallAllWithOptions(ctx, agentID, query, m.cfg.TopK, options)
+	if err != nil {
+		return memory.RecallResult{}, fmt.Errorf("graymatter: recall all: %w", err)
+	}
+	return result, nil
 }
 
 // Recall returns the top-k most relevant facts for agentID given query.
@@ -256,15 +336,20 @@ func (m *Memory) RememberExtracted(ctx context.Context, agentID, llmResponse str
 	if m.store == nil {
 		return nil
 	}
-	facts, err := memory.ExtractFacts(ctx, llmResponse, m.cfg)
+	result, err := memory.ExtractFactsWithProvenance(ctx, llmResponse, m.cfg)
 	if err != nil {
 		return fmt.Errorf("graymatter: remember extracted: %w", err)
 	}
-	for _, f := range facts {
+	options := memory.WriteOptions{}
+	if result.Source == memory.ExtractionLLM {
+		confidence := "unverified"
+		options.Confidence = &confidence
+	}
+	for _, f := range result.Facts {
 		if f == "" {
 			continue
 		}
-		if err := m.store.Put(ctx, agentID, f); err != nil {
+		if _, err := m.store.PutWithOptionsReturningFact(ctx, agentID, f, options); err != nil {
 			return fmt.Errorf("graymatter: remember extracted put: %w", err)
 		}
 		if m.cfg.AsyncConsolidate {

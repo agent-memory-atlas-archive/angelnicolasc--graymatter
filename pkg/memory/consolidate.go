@@ -36,6 +36,10 @@ var ErrConsolidateLLMUnsupported = errors.New(
 // output apart from a transport failure.
 var ErrInvalidProposal = errors.New("invalid consolidation proposal")
 
+// ErrConsolidationRetirement marks a committed summary whose required source
+// retirement failed. Unlike a discarded proposal, it must reach the caller.
+var ErrConsolidationRetirement = errors.New("consolidation summary committed but source retirement failed")
+
 // ConsolidateConfig is the subset of configuration used by consolidation.
 // Defined as an interface to avoid a circular import with the root package.
 type ConsolidateConfig interface {
@@ -130,16 +134,13 @@ func (s *Store) Consolidate(ctx context.Context, agentID string, cfg Consolidate
 	var decayErrs []error
 	nowT := s.now()
 	for i := range facts {
-		// Invariant I-1 (ADR-010): pinned facts are exempt from decay. The
-		// user declared them permanent; a dormant period must not collect
-		// them, and the decay write would only churn the store.
-		if facts[i].Pinned {
-			continue
-		}
-		hours := nowT.Sub(facts[i].AccessedAt).Hours()
-		facts[i].Weight = math.Min(facts[i].Weight, math.Exp(-lambda*hours))
-		if err := s.UpdateFact(agentID, facts[i]); err != nil {
+		// Read fresh under the write lock: concurrent confidence, access,
+		// pin and retirement changes must survive this decay operation.
+		current, err := s.decayFact(agentID, facts[i].ID, nowT, lambda)
+		if err != nil {
 			decayErrs = append(decayErrs, fmt.Errorf("decay fact %s: %w", facts[i].ID, err))
+		} else {
+			facts[i] = current
 		}
 	}
 	if len(decayErrs) > 0 {
@@ -178,6 +179,9 @@ func (s *Store) Consolidate(ctx context.Context, agentID string, cfg Consolidate
 			if applyErr != nil && s.cfg.OnConsolidateError != nil {
 				s.cfg.OnConsolidateError(agentID, applyErr)
 			}
+			if errors.Is(applyErr, ErrConsolidationRetirement) {
+				return applyErr
+			}
 		}
 		// prop == nil && err == nil: summariser produced nothing to apply by
 		// configuration (unknown provider name) — silence stays correct.
@@ -196,7 +200,7 @@ func (s *Store) Consolidate(ctx context.Context, agentID string, cfg Consolidate
 		}
 		if f.Weight < 0.01 {
 			// Best-effort; weight-zero facts will simply be ignored in future recalls.
-			_ = s.Delete(agentID, f.ID)
+			_ = s.pruneFact(agentID, f.ID)
 		}
 	}
 
@@ -325,7 +329,7 @@ func textSignature(text string) string {
 func summarisationBatch(facts []Fact) []Fact {
 	live := make([]Fact, 0, len(facts))
 	for _, f := range facts {
-		if !f.Pinned {
+		if !f.Pinned && !f.IsSuperseded() {
 			live = append(live, f)
 		}
 	}
@@ -401,7 +405,7 @@ func (s *Store) applyProposal(ctx context.Context, agentID string, batch []Fact,
 	// Anthropic path wraps plain text into a proposal directly. No caller
 	// reaches here with an unusable proposal any more — keeping the check at
 	// the mutation boundary is what makes that true for future paths too.
-	if strings.TrimSpace(prop.Summary) == "" || len(prop.Consumes) == 0 {
+	if prop == nil || strings.TrimSpace(prop.Summary) == "" || len(prop.Consumes) == 0 {
 		return 0, fmt.Errorf("%w: empty summary or empty consumes", ErrInvalidProposal)
 	}
 	byID := make(map[string]Fact, len(batch))
@@ -415,10 +419,21 @@ func (s *Store) applyProposal(ctx context.Context, agentID string, batch []Fact,
 			continue // not shown to the model: it cannot be consumed
 		}
 		delete(byID, id) // duplicate IDs consume once
-		consumed = append(consumed, f)
+		if f.AgentID == agentID && !f.IsSuperseded() && !f.Pinned {
+			consumed = append(consumed, f)
+		}
+	}
+	if len(consumed) == 0 {
+		return 0, fmt.Errorf("%w: no valid live consumed IDs", ErrInvalidProposal)
 	}
 
-	summary, err := s.putReturningFact(ctx, agentID, prop.Summary)
+	summary, err := s.putReturningFactPrepared(ctx, agentID, prop.Summary, KindFact, "", WriteOptions{}, func(tx *bolt.Tx, summary *Fact) error {
+		if err := validateSourcesTx(tx, agentID, consumed, true); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidProposal, err)
+		}
+		summary.Confidence = derivedConfidence(consumed)
+		return nil
+	})
 	if err != nil {
 		return 0, fmt.Errorf("put consolidation summary: %w", err)
 	}
@@ -427,10 +442,8 @@ func (s *Store) applyProposal(ctx context.Context, agentID string, batch []Fact,
 	var errs []error
 	applied := 0
 	for _, f := range consumed {
-		tomb := f
-		tomb.SupersededBy = summaryID
-		if err := s.UpdateFact(agentID, tomb); err != nil {
-			errs = append(errs, fmt.Errorf("tombstone consolidated fact %s: %w", f.ID, err))
+		if err := s.retireDerivedFact(agentID, f, summaryID, true); err != nil {
+			errs = append(errs, fmt.Errorf("summary %s committed; %w: tombstone consolidated fact %s: %w", summaryID, ErrConsolidationRetirement, f.ID, err))
 			continue
 		}
 		applied++

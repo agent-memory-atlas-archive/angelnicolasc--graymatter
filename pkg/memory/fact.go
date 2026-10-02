@@ -41,8 +41,9 @@ type Fact struct {
 
 	// Confidence records the agent's own epistemic stance toward this fact:
 	// "verified", "inferred" or "unverified". Empty means inferred. It is
-	// metadata declared at write time and surfaced by exports and the TUI;
-	// it never affects ranking, decay or pruning.
+	// a writer's declaration rather than a calibrated probability. Explicit
+	// retrieval options can filter or prefer it; decay and pruning ignore it.
+	// Unknown historical values are preserved and treated as unverified.
 	//
 	// Added in v0.12.0. Facts written by earlier versions have no confidence
 	// key and load as inferred.

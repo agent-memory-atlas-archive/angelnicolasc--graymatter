@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/angelnicolasc/graymatter/pkg/memory"
+	"github.com/angelnicolasc/graymatter/pkg/memory/rpc"
+	"github.com/spf13/cobra"
 )
 
 // pinCmd and unpinCmd expose the pin exemption (ADR-010) on the CLI: a
@@ -35,8 +36,8 @@ graymatter unpin restores normal decay.`,
 
 func unpinCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unpin <agent-id> <text>",
-		Short: "Restore normal decay for a pinned fact",
+		Use:     "unpin <agent-id> <text>",
+		Short:   "Restore normal decay for a pinned fact",
 		Example: `  graymatter unpin "backend-architect" "The write path is single-writer by design; readers never block on consolidation"`,
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -82,14 +83,22 @@ func runPin(pinned bool, args []string) error {
 		}
 		return nil
 	}
+	patcher, patches := store.(rpc.ConfidenceLifecycle)
+	if patches {
+		if err := patcher.SetPinned(agentID, pinned, victim); err != nil {
+			return fmt.Errorf("update fact: %w", err)
+		}
+	}
 	victim.Pinned = pinned
 	if pinned {
 		victim.PinnedAt = time.Now().UTC()
 	} else {
 		victim.PinnedAt = time.Time{}
 	}
-	if err := store.UpdateFact(agentID, victim); err != nil {
-		return fmt.Errorf("update fact: %w", err)
+	if !patches {
+		if err := store.UpdateFact(agentID, victim); err != nil {
+			return fmt.Errorf("update fact: %w", err)
+		}
 	}
 
 	if jsonOut {

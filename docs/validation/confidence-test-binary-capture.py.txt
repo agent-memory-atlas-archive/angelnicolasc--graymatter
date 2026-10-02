@@ -1,0 +1,13 @@
+from pathlib import Path
+from datetime import datetime, timezone
+import hashlib, json, os, subprocess, sys
+
+# go test's -exec launcher supplies the exact temporary test binary followed
+# by its normal arguments. Hash that binary before launching it unchanged.
+binary=Path(sys.argv[1])
+receipt=Path(os.environ['GRAYMATTER_SCALE_BINARY_RECEIPT'])
+metadata={'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
+          'binary_name':binary.name,'arguments':sys.argv[2:],
+          'captured_utc':datetime.now(timezone.utc).isoformat()}
+receipt.write_text(json.dumps(metadata,indent=2)+'\n',encoding='utf-8')
+raise SystemExit(subprocess.run(sys.argv[1:]).returncode)
