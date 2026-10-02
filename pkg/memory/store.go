@@ -596,8 +596,9 @@ func (s *Store) putReturningFactPrepared(ctx context.Context, agentID, text, kin
 		// but it made every write on every store pay for a path that is off
 		// by default — measured at roughly double the Put latency — and a
 		// store nobody opted in for should cost exactly what it cost before
-		// this file existed. Turning the flag on later is safe without it:
-		// the count will not match, and the first recall rebuilds.
+		// this file existed. Invalidate any previous index when maintenance
+		// is off: a delete followed by a put can preserve the old fact count,
+		// so count checking alone cannot make re-enabling retrieval safe.
 		if s.cfg.CandidateRetrieval {
 			if err := idxAddFact(tx, f, s.cfg.StemKeywords); err != nil {
 				return err
@@ -605,6 +606,8 @@ func (s *Store) putReturningFactPrepared(ctx context.Context, agentID, text, kin
 			if err := idxBumpCount(tx, agentID, +1, s.cfg.StemKeywords); err != nil {
 				return err
 			}
+		} else if err := idxInvalidate(tx, agentID); err != nil {
+			return err
 		}
 		if hasEmbedding {
 			pb, err := tx.Bucket(bucketPendingVector).CreateBucketIfNotExists([]byte(agentID))
@@ -677,6 +680,8 @@ func (s *Store) deleteFactTx(tx *bolt.Tx, agentID, factID string) error {
 		if err := idxBumpCount(tx, agentID, -1, s.cfg.StemKeywords); err != nil {
 			return err
 		}
+	} else if err := idxInvalidate(tx, agentID); err != nil {
+		return err
 	}
 	if kb := tx.Bucket(bucketKGExtracted); kb != nil {
 		return kb.Delete([]byte(agentID + "\x00" + factID))
@@ -914,6 +919,9 @@ func (s *Store) persistFactTx(tx *bolt.Tx, b *bolt.Bucket, agentID string, f Fac
 		return err
 	}
 	if !s.cfg.CandidateRetrieval {
+		if err := idxInvalidate(tx, agentID); err != nil {
+			return err
+		}
 		return b.Put([]byte(f.ID), data)
 	}
 	if raw := b.Get([]byte(f.ID)); raw != nil {

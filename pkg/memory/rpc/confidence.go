@@ -484,6 +484,9 @@ func (c *Client) ReviseFactsWithOptions(ctx context.Context, agentID, text strin
 
 func (c *Client) Retire(agentID string, victims ...memory.Fact) error {
 	if err := c.requireCapability(ConfidenceLifecycleV1); err != nil {
+		if errors.Is(err, ErrUnsupportedCapability) {
+			return c.legacyLifecycle(agentID, nil, victims...)
+		}
 		return err
 	}
 	return mapCapabilityError(c.call("Retire", &RetireRequest{AgentID: agentID, Victims: victims}, &LifecycleResponse{}))
@@ -491,6 +494,9 @@ func (c *Client) Retire(agentID string, victims ...memory.Fact) error {
 
 func (c *Client) SetPinned(agentID string, pinned bool, victims ...memory.Fact) error {
 	if err := c.requireCapability(ConfidenceLifecycleV1); err != nil {
+		if errors.Is(err, ErrUnsupportedCapability) {
+			return c.legacyLifecycle(agentID, &pinned, victims...)
+		}
 		return err
 	}
 	return mapCapabilityError(c.call("SetPinned", &SetPinnedRequest{AgentID: agentID, Pinned: pinned, Victims: victims}, &LifecycleResponse{}))

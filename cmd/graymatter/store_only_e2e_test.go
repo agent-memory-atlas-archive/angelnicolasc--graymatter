@@ -419,6 +419,15 @@ func (m *issue81MCP) send(v any) {
 
 func (m *issue81MCP) request(id int, method string, params any) []byte {
 	m.t.Helper()
+	result := m.requestAllowToolError(id, method, params)
+	if bytes.Contains(result, []byte(`"isError":true`)) {
+		m.t.Fatalf("MCP tool failed for %s: %s", method, result)
+	}
+	return result
+}
+
+func (m *issue81MCP) requestAllowToolError(id int, method string, params any) []byte {
+	m.t.Helper()
 	m.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 	deadline := time.NewTimer(12 * time.Second)
 	defer deadline.Stop()
@@ -441,9 +450,6 @@ func (m *issue81MCP) request(id int, method string, params any) []byte {
 			}
 			if len(envelope.Result) == 0 {
 				m.t.Fatalf("MCP result absent for %s: %s", method, line)
-			}
-			if bytes.Contains(envelope.Result, []byte(`"isError":true`)) {
-				m.t.Fatalf("MCP tool failed for %s: %s", method, line)
 			}
 			if m.trace != nil {
 				m.trace(id, method, params, line)

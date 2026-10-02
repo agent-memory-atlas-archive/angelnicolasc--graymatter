@@ -13,6 +13,10 @@ import (
 // derived write could commit. Callers may obtain a fresh snapshot and retry.
 var ErrFactChanged = errors.New("fact changed before mutation")
 
+// errFactUnchanged rolls back a no-op patch: committing even an unchanged
+// bbolt write transaction would still write freelist and metadata pages.
+var errFactUnchanged = errors.New("fact unchanged")
+
 func factInTx(tx *bolt.Tx, agentID, id string) (Fact, error) {
 	parent := tx.Bucket(bucketFacts)
 	if parent == nil {
@@ -34,6 +38,8 @@ func factInTx(tx *bolt.Tx, agentID, id string) (Fact, error) {
 
 // patchFact reads fresh state under the write lock. Its callback changes only
 // the intended fields, preserving confidence and all unrelated metadata.
+// Returning errFactUnchanged without modifying the fact skips persistence and
+// returns the current fact successfully after rolling back the transaction.
 func (s *Store) patchFact(agentID, id string, patch func(*Fact) error) (Fact, error) {
 	if s.readOnly {
 		return Fact{}, ErrStoreReadOnly
@@ -45,6 +51,9 @@ func (s *Store) patchFact(agentID, id string, patch func(*Fact) error) (Fact, er
 			return err
 		}
 		if err := patch(&current); err != nil {
+			if err == errFactUnchanged {
+				updated = current
+			}
 			return err
 		}
 		if err := s.persistFactTx(tx, tx.Bucket(bucketFacts).Bucket([]byte(agentID)), agentID, current); err != nil {
@@ -53,6 +62,9 @@ func (s *Store) patchFact(agentID, id string, patch func(*Fact) error) (Fact, er
 		updated = current
 		return nil
 	})
+	if err == errFactUnchanged {
+		err = nil
+	}
 	return updated, err
 }
 
@@ -112,10 +124,11 @@ func (s *Store) SetPinned(agentID string, pinned bool, victims ...Fact) error {
 
 func (s *Store) decayFact(agentID, id string, now time.Time, lambda float64) (Fact, error) {
 	return s.patchFact(agentID, id, func(current *Fact) error {
-		if !current.Pinned {
-			hours := now.Sub(current.AccessedAt).Hours()
-			current.Weight = math.Min(current.Weight, math.Exp(-lambda*hours))
+		if current.Pinned {
+			return errFactUnchanged
 		}
+		hours := now.Sub(current.AccessedAt).Hours()
+		current.Weight = math.Min(current.Weight, math.Exp(-lambda*hours))
 		return nil
 	})
 }

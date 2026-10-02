@@ -75,6 +75,25 @@ source, toolchain, operating system and build flags.
 Tests are in `pkg/memory`, `pkg/memory/rpc`, the root public API package and the
 nested CLI module. Root `go test ./...` does not include that nested module.
 
+Review regression coverage additionally checks:
+
+- Reopening an indexed store with indexing disabled, changing confidence or
+  replacing facts without changing the count, and enabling the index again.
+  Filtering, weighting and receipts must agree with canonical facts; a read-only
+  open must fall back without repairing the persisted index.
+- Consolidating pinned facts with and without indexing performs zero bbolt
+  writes. A concurrent pin or unpin is read under the writer lock, preserving
+  current confidence and access metadata even when decay has nothing to write.
+- Pin, unpin and forget against the pinned historical daemon retain their legacy
+  behavior over CLI and MCP. Negotiation happens before mutation; an unsupported
+  response or transport error after dispatch cannot trigger a legacy replay.
+  Conservative revision still requires the new write capability.
+
+Local validation must clear `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and
+`VOYAGE_API_KEY` and disable the Ollama endpoint in the test process environment.
+An inherited consolidation provider can add summary records to legacy daemon
+tests that assert a fixed count of user writes.
+
 ## Quality result and limits
 
 The [per-case ranking report](confidence-quality.json) records every evaluated calibration weight and the single holdout candidate. The smallest calibration-passing candidate is **0.1**. That single candidate

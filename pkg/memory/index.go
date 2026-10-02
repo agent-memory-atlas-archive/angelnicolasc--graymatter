@@ -77,14 +77,17 @@ const (
 // indexState is the per-agent stamp that decides whether the index can be
 // trusted. Facts is the fact count at the last maintained write: a mismatch
 // against the live bucket means some writer bypassed maintenance, and the
-// index rebuilds instead of answering from a stale picture. Stemmed records
-// the fold the postings were built with, because StemKeywords changes what a
-// token is and an index built under one fold cannot answer under the other.
+// index rebuilds instead of answering from a stale picture. Writes made while
+// maintenance is disabled invalidate Version, including same-count changes
+// the count cannot detect. Only a full rebuild can restore that version.
+// Stemmed records the fold the postings were built with, because StemKeywords
+// changes what a token is and an index built under one fold cannot answer under
+// the other.
 type indexState struct {
 	Version int  `json:"version"`
 	Facts   int  `json:"facts"`
 	Stemmed bool `json:"stemmed"`
-	// Writes counts every maintained mutation, not just the ones that change
+	// Writes counts every maintained mutation or invalidation, not just changes to
 	// the fact count. A revision leaves Facts untouched while moving a fact's
 	// flags and possibly its timestamp, so a cache keyed on Facts alone would
 	// serve a spine that no longer matches the store. This is the key the
@@ -272,6 +275,29 @@ func idxBucketRO(tx *bolt.Tx, root []byte, agentID string) *bolt.Bucket {
 	return parent.Bucket([]byte(agentID))
 }
 
+// idxInvalidate marks a previous index stale in the canonical write's own
+// transaction. Keep its generation so a rebuild cannot reuse a cached spine.
+// A store that never had an index pays no bucket creation or JSON write here.
+func idxInvalidate(tx *bolt.Tx, agentID string) error {
+	mb := tx.Bucket(bucketIdxMeta)
+	if mb == nil {
+		return nil
+	}
+	raw := mb.Get([]byte(agentID))
+	if raw == nil {
+		return nil
+	}
+	var st indexState
+	_ = json.Unmarshal(raw, &st)
+	st.Version = 0
+	st.Writes++
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return mb.Put([]byte(agentID), data)
+}
+
 // idxBumpCount moves the agent's recorded fact count by delta. The count is
 // the self-heal signal: a process compares it against the real bucket once,
 // the first time it recalls for that agent, and rebuilds on disagreement — so
@@ -293,10 +319,14 @@ func idxBumpCount(tx *bolt.Tx, agentID string, delta int, doStem bool) error {
 	st := indexState{Version: indexVersion, Stemmed: doStem}
 	if raw := mb.Get([]byte(agentID)); raw != nil {
 		var prev indexState
-		if json.Unmarshal(raw, &prev) == nil && prev.Version == indexVersion && prev.Stemmed == doStem {
-			st.Facts = prev.Facts
-			st.Writes = prev.Writes
+		if json.Unmarshal(raw, &prev) != nil || prev.Version != indexVersion || prev.Stemmed != doStem {
+			// A maintained write only updates its own entries. It cannot
+			// repair an index invalidated by earlier writes, an old layout,
+			// or a different tokenisation fold. Leave rebuilding to recall.
+			return idxInvalidate(tx, agentID)
 		}
+		st.Facts = prev.Facts
+		st.Writes = prev.Writes
 	}
 	st.Facts += delta
 	st.Writes++

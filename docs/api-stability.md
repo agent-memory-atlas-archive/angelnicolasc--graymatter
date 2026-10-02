@@ -166,6 +166,14 @@ A new client can use an old daemon for an effectively legacy request, but new
 options or an active positive default require a supporting capability; otherwise
 the request returns an update/restart error before effects. Reconnection
 renegotiates capabilities. Writes with uncertain commit results are not replayed.
+Pin, unpin and forget remain available against an older daemon: after negotiating
+the absence of `confidence-lifecycle-v1`, the client reads each target's current
+metadata and uses the historical `UpdateFact` endpoint once. This compatibility
+path retains the old daemon's read-modify-write concurrency limitations; upgraded
+daemons use transactional field patches. An error after sending a mutation never
+switches endpoints or replays that mutation. Revision requires
+`confidence-write-v1` even when the label is omitted, because conservative
+confidence derivation and transactional source validation are new semantics.
 The REST API retains its legacy endpoints and zero preference; authenticated
 MCP over HTTP includes the new options.
 
