@@ -35,6 +35,13 @@ jobs:
             go.sum
             cmd/graymatter/go.sum
 
+      # Release preparation may require a root tag that is not published yet.
+      - name: Build against the checked-out library
+        working-directory: cmd/graymatter
+        env:
+          GOWORK: "off"
+        run: go mod edit -replace github.com/angelnicolasc/graymatter=../..
+
       # Pinned release rather than @latest: the mutation operator set is what
       # makes two runs comparable, and a silent tool upgrade would move the
       # baseline under our feet.

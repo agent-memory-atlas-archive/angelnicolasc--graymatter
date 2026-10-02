@@ -39,8 +39,7 @@ optional: `graymatter hooks install --scope global` keeps their guard against
 unprepared directories.
 
 With MCP and instructions already available, prepare only the current
-project's store before a session using a build that includes this Unreleased
-flag (the v0.19.1 release does not):
+project's store before a session with `--store-only`, available since v0.20.0:
 
 ```sh
 graymatter init --store-only --quiet
@@ -87,9 +86,12 @@ The HTTP transport requires a bearer token; it lives in
 ## One store, many processes
 
 GrayMatter persists to bbolt, a single-writer embedded DB — only one process
-holds the write lock at a time. The CLI and TUI fall back to read-only mode
-when the lock is held; a second MCP server fails fast instead of blocking.
+holds the write lock at a time. Normal CLI, TUI and MCP processes connect to
+one store daemon, which owns that lock. Clients can operate concurrently and
+start the daemon when needed. `--no-daemon` opts into direct access, where
+competing processes can encounter the database lock.
 
-Most robust setup: one shared `graymatter mcp serve --http 127.0.0.1:8080`
-pointed at by every client. Details and failure modes in the
-[agent guide](/reference/agents-guide/).
+`graymatter tui --read-only` requires an existing store and a running daemon;
+it does not start one. Explicit `--no-daemon --read-only` opens the existing
+store directly without creating it, but cannot coexist with a direct writer.
+See the [agent guide](/reference/agents-guide/) for the access contracts.
