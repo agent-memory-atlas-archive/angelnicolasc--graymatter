@@ -136,7 +136,10 @@ func (m tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				step = -1
 			}
 			m.factMode = modes[(idx+step+4)%4]
-			m.factList.SetItems(nil)
+			if id := m.selectedFactID(); id != "" {
+				m.restoreFactID = id
+			}
+			setListItems(&m.factList, nil)
 			m.previewID = ""
 			return m, m.loadFacts(m.namespace)
 		case "enter":
@@ -290,7 +293,10 @@ func (m tuiModel) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.closeInput()
 			if m.activeTab == tabMemory {
 				m.factQuery = value
-				m.factList.SetItems(nil)
+				if id := m.selectedFactID(); id != "" {
+					m.restoreFactID = id
+				}
+				setListItems(&m.factList, nil)
 				m.previewID = ""
 				return m, m.loadFacts(m.namespace)
 			}
@@ -605,16 +611,41 @@ func (m *tuiModel) filterLocal(q string) {
 	default:
 		return
 	}
+	old := listIdentity(l.SelectedItem())
 	l.SetFilteringEnabled(true)
 	l.SetFilterText(q)
 	l.SetFilterState(list.FilterApplied)
+	selectVisible(l, func(item list.Item) bool { return old != "" && listIdentity(item) == old })
 }
 func setListItems(l *list.Model, items []list.Item) {
+	old := listIdentity(l.SelectedItem())
 	q := l.FilterValue()
+	filtered := l.FilterState() != list.Unfiltered
 	l.SetItems(items)
-	if q != "" {
+	// SetItems retains the old row cursor and schedules filtering. Reapply
+	// even an empty active filter synchronously, then select by durable ID.
+	if filtered {
 		l.SetFilterText(q)
 	}
+	selectVisible(l, func(item list.Item) bool { return old != "" && listIdentity(item) == old })
+}
+
+func listIdentity(item list.Item) string {
+	switch item := item.(type) {
+	case agentItem:
+		return item.id
+	case factItem:
+		return item.fact.ID
+	case sessionItem:
+		return item.s.ID
+	case nodeItem:
+		return item.n.ID
+	case checkpointItem:
+		return item.cp.ID
+	case receiptItem:
+		return item.receipt.Provenance.FactID
+	}
+	return ""
 }
 
 func (m tuiModel) neighborMatches(q string) []nodeItem {
@@ -775,6 +806,7 @@ func selectClickedRow(l *list.Model, row, height, rowHeight int) {
 	}
 }
 func selectVisible(l *list.Model, matches func(list.Item) bool) {
+	l.Select(0)
 	for i, item := range l.VisibleItems() {
 		if matches(item) {
 			l.Select(i)

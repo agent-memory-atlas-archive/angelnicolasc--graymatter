@@ -297,6 +297,7 @@ func newTUIModel(store cliStore, dir string, readOnly bool, theme string, mouse 
 		l := list.New(nil, d, 40, 20)
 		l.Title = title
 		l.SetShowTitle(false)
+		l.SetShowFilter(false)
 		l.SetShowStatusBar(false)
 		l.SetShowHelp(false)
 		l.SetShowPagination(false)
@@ -615,7 +616,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, a := range msg.agents {
 			items[i] = a
 		}
-		m.agentList.SetItems(items)
+		setListItems(&m.agentList, items)
 		for i, a := range msg.agents {
 			if a.id == old {
 				m.agentList.Select(i)
@@ -654,7 +655,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, f := range msg.facts {
 			items = append(items, f)
 		}
-		m.factList.SetItems(items)
+		setListItems(&m.factList, items)
 		for i, item := range items {
 			if item.(factItem).fact.ID == old {
 				m.factList.Select(i)
@@ -729,7 +730,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, r := range msg.receipts {
 				items[i] = receiptItem{r, i + 1}
 			}
-			m.recallList.SetItems(items)
+			setListItems(&m.recallList, items)
 			m.focus = 0
 			m.syncPreview(true)
 		}
@@ -801,15 +802,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = msg.err.Error()
 		} else {
+			if m.activeTab != tabMemory {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 			m.activeTab = tabMemory
 			m.recallGeneration++
 			m.checkpointGeneration++
-			m.recallList.SetItems(nil)
-			m.checkpointList.SetItems(nil)
+			setListItems(&m.recallList, nil)
+			setListItems(&m.checkpointList, nil)
 			m.namespace = msg.fact.AgentID
 			m.factMode = "all"
 			m.factQuery = ""
-			m.factList.SetItems([]list.Item{factItem{msg.fact}})
+			setListItems(&m.factList, []list.Item{factItem{msg.fact}})
 			m.factsGeneration++
 			m.factTotal, m.nextFactCursor = 1, ""
 			m.loaded("memory", nil)
@@ -852,9 +856,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) chooseNamespace(agent string) tea.Cmd {
 	if m.namespace != agent {
-		m.factList.SetItems(nil)
-		m.recallList.SetItems(nil)
-		m.checkpointList.SetItems(nil)
+		setListItems(&m.factList, nil)
+		setListItems(&m.recallList, nil)
+		setListItems(&m.checkpointList, nil)
 		m.detail.SetContent("")
 		m.previewText = ""
 		m.nextFactCursor, m.factTotal = "", 0
