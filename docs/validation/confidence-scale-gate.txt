@@ -1,0 +1,17 @@
+=== RUN   TestP4ScaleGate
+    scale_gate_test.go:150: [scan   ]    600 facts · recall top-8 p50  5.823ms p99 14.494ms (min of 3) · full scan      3ms (52%) · put p50 1.068ms
+    scale_gate_test.go:150: [scan   ]   3000 facts · recall top-8 p50 25.355ms p99 36.091ms (min of 3) · full scan 14.999ms (59%) · put p50 1.045ms
+    scale_gate_test.go:150: [scan   ]  10000 facts · recall top-8 p50 79.079ms p99 95.485ms (min of 3) · full scan     50ms (63%) · put p50 1.044ms
+    scale_gate_test.go:150: [scan   ]  30000 facts · recall top-8 p50 231.401ms p99 282.862ms (min of 3) · full scan 150.124ms (65%) · put p50 1.044ms
+    scale_gate_test.go:150: [indexed]    600 facts · recall top-8 p50   1.57ms p99   2.66ms (min of 3) · full scan  2.999ms (191%) · put p50 1.633ms
+    scale_gate_test.go:150: [indexed]   3000 facts · recall top-8 p50  1.653ms p99  9.755ms (min of 3) · full scan 14.401ms (871%) · put p50 2.088ms
+    scale_gate_test.go:150: [indexed]  10000 facts · recall top-8 p50  2.095ms p99 10.045ms (min of 3) · full scan 48.519ms (2316%) · put p50 2.101ms
+    scale_gate_test.go:150: [indexed]  30000 facts · recall top-8 p50  3.211ms p99 21.175ms (min of 3) · full scan 146.086ms (4550%) · put p50 2.133ms
+    scale_gate_test.go:191:     probe p50  2.619ms p99  5.039ms · "how many webhook retries do we allow?"
+    scale_gate_test.go:191:     probe p50 10.001ms p99 12.617ms · "who is on call for billing?"
+    scale_gate_test.go:191:     probe p50 20.486ms p99 22.456ms · "which region hosts the primary database?"
+    scale_gate_test.go:191:     probe p50  2.639ms p99  4.001ms · "what is the minimum TLS version?"
+    scale_gate_test.go:191:     probe p50  2.004ms p99      4ms · "how often do we release?"
+--- PASS: TestP4ScaleGate (400.62s)
+PASS
+ok  	github.com/angelnicolasc/graymatter/pkg/memory	400.983s

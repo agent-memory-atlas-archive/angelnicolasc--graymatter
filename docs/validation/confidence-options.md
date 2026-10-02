@@ -69,7 +69,7 @@ source, toolchain, operating system and build flags.
 | T17 | External-package legacy `AdvancedStore` implementation compiles without embedding a current interface; old signatures/endpoints and legacy contracts remain tested. |
 | T18 | Concurrent per-query weights, project/shared isolation, tombstones/aliases and access writes only for final canonical results, including merged all-scope results. |
 | T19 | Frozen 12-family calibration and 12-family holdout, each in English and Spanish; independent scores and explicit absence-of-evidence reporting. |
-| T20 | `BenchmarkConfidenceRecall` and `BenchmarkConfidencePut`: 600/5k/10k/30k mixed facts, durable writes, nonempty results, normal access bookkeeping, weight/filter allocations and matched historical measurements. |
+| T20 | `BenchmarkConfidenceRecall` and `BenchmarkConfidencePut`: 600/5k/10k/30k mixed facts, durable writes, nonempty results, normal access bookkeeping, weight/filter allocations and matched historical measurements; [same-host report](confidence-performance.md) and [unchanged scale gate](confidence-scale-gate.json), both on `aa702248`. |
 | T21 | Zero first-stage default, configured-positive direct/RPC/MCP policy receipts, negotiated effective defaults and explicit zero preserving an explicit filter. |
 
 Tests are in `pkg/memory`, `pkg/memory/rpc`, the root public API package and the

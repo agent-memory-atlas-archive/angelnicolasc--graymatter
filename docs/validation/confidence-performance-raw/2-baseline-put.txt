@@ -2,12 +2,12 @@ goos: windows
 goarch: amd64
 pkg: github.com/angelnicolasc/graymatter/pkg/memory
 cpu: AMD Ryzen 5 3400G with Radeon Vega Graphics
-BenchmarkConfidencePut/600/legacy-8         	      10	   1348330 ns/op	   83710 B/op	     304 allocs/op
-BenchmarkConfidencePut/600/verified-8       	      10	   3827920 ns/op	  135892 B/op	     674 allocs/op
-BenchmarkConfidencePut/5000/legacy-8        	      10	   1616850 ns/op	  105792 B/op	     532 allocs/op
-BenchmarkConfidencePut/5000/verified-8      	      10	   4812120 ns/op	  176569 B/op	    1176 allocs/op
-BenchmarkConfidencePut/10000/legacy-8       	      10	   2008320 ns/op	  124037 B/op	     554 allocs/op
-BenchmarkConfidencePut/10000/verified-8     	      10	   3374510 ns/op	  203915 B/op	    1209 allocs/op
-BenchmarkConfidencePut/30000/legacy-8       	      10	   2371880 ns/op	  124481 B/op	     598 allocs/op
-BenchmarkConfidencePut/30000/verified-8     	      10	   3658290 ns/op	  209130 B/op	    1316 allocs/op
+BenchmarkConfidencePut/600/legacy-8         	      10	   1289680 ns/op	   83708 B/op	     304 allocs/op
+BenchmarkConfidencePut/600/verified-8       	      10	   2790960 ns/op	  135720 B/op	     672 allocs/op
+BenchmarkConfidencePut/5000/legacy-8        	      10	   1495890 ns/op	  105364 B/op	     531 allocs/op
+BenchmarkConfidencePut/5000/verified-8      	      10	   3246450 ns/op	  176681 B/op	    1177 allocs/op
+BenchmarkConfidencePut/10000/legacy-8       	      10	   1815340 ns/op	  123655 B/op	     553 allocs/op
+BenchmarkConfidencePut/10000/verified-8     	      10	   4518180 ns/op	  204632 B/op	    1213 allocs/op
+BenchmarkConfidencePut/30000/legacy-8       	      10	   2161240 ns/op	  124535 B/op	     597 allocs/op
+BenchmarkConfidencePut/30000/verified-8     	      10	   3733100 ns/op	  209021 B/op	    1315 allocs/op
 PASS
