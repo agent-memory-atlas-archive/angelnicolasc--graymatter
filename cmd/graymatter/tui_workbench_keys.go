@@ -357,7 +357,9 @@ func (m *tuiModel) executeCommand(name string) tea.Cmd {
 		m.status = fmt.Sprintf("Mouse navigation: %t", m.mouse)
 	case "theme dark", "theme light", "theme terminal":
 		m.setTheme(strings.TrimPrefix(name, "theme "))
+		m.syncPreview(false)
 		m.status = "Theme: " + m.themeName
+		return tea.ClearScreen
 	case "add", "revise", "retire", "pin":
 		if m.activeTab != tabMemory {
 			m.status = "Open Memory to curate a fact"
@@ -712,10 +714,10 @@ func (m *tuiModel) handleMouse(msg tea.MouseClickMsg) tea.Cmd {
 	if y == m.height-1 {
 		return m.switchTab(tabUsage)
 	}
-	if y == 1 {
-		pos := 0
-		for i, name := range tabNames {
-			w := len(name) + 4
+	if y == tuiTabRow {
+		pos := tuiTabInset
+		for i := range tabNames {
+			w := len([]rune(m.tabLabel(i)))
 			if x >= pos && x < pos+w {
 				return m.switchTab(tabID(i))
 			}
@@ -723,18 +725,19 @@ func (m *tuiModel) handleMouse(msg tea.MouseClickMsg) tea.Cmd {
 		}
 		return nil
 	}
-	if y < 6 || y >= m.height-4 {
+	if y < m.contentTop() || y >= m.height-tuiFooterRows {
 		return nil
 	}
 	if m.width < 100 && m.focus == 1 {
 		return nil
 	}
 	ns, lw, _ := m.columnWidths()
-	row := (y - 6) / 3
-	if m.activeTab == tabMemory && ns > 0 && x < ns {
+	rowHeight := m.listRowHeight()
+	row := (y - m.contentTop()) / rowHeight
+	if m.activeTab == tabMemory && ((ns > 0 && x < ns) || (m.width < 100 && m.memPane == memPaneAgents)) {
 		m.memPane = memPaneAgents
 		m.focus = 0
-		selectClickedRow(&m.agentList, row, m.height-10)
+		selectClickedRow(&m.agentList, y-m.contentTop(), m.contentHeight(), 1)
 		if s, ok := m.agentList.SelectedItem().(agentItem); ok {
 			return m.chooseNamespace(s.id)
 		}
@@ -749,19 +752,27 @@ func (m *tuiModel) handleMouse(msg tea.MouseClickMsg) tea.Cmd {
 	m.memPane = memPaneFacts
 	l := m.activeList()
 	if l != nil {
-		selectClickedRow(l, row, m.height-10)
+		if (y-m.contentTop())%rowHeight >= 2 {
+			return nil // Whitespace between memories is not a selectable row.
+		}
+		selectClickedRow(l, row, m.contentHeight(), rowHeight)
 		m.syncPreview(false)
 	}
 	return nil
 }
-func selectClickedRow(l *list.Model, row, height int) {
+func selectClickedRow(l *list.Model, row, height, rowHeight int) {
 	count := len(l.VisibleItems())
 	if count == 0 {
 		return
 	}
-	perPage := max(1, height/3)
+	perPage := max(1, height/rowHeight)
+	if row < 0 || row >= perPage {
+		return
+	}
 	start := (l.Index() / perPage) * perPage
-	l.Select(min(count-1, start+max(0, row)))
+	if start+row < count {
+		l.Select(start + row)
+	}
 }
 func selectVisible(l *list.Model, matches func(list.Item) bool) {
 	for i, item := range l.VisibleItems() {

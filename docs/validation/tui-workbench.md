@@ -54,6 +54,17 @@ subprocesses:
   corrupt history without partial success, and cancellation when a configured
   wrapper exits while its descendant retains stdout. The complete Usage race
   suite and CLI Usage tests passed after these fixes.
+- The visual revision passed the complete CLI entrypoint race suite in 277.4
+  seconds. After the final spacing adjustment, workbench, program-lifecycle and
+  Usage race tests passed again, including Page Down, mouse hit targets and
+  selection preservation across the 29/30-row spacing breakpoint. CLI vet and
+  the CGO-disabled build also passed. Long quota labels, windows and context
+  component names remain recoverable in narrow layouts.
+
+The initial feature commit passed all 15 remote checks, including the
+Ubuntu/macOS/Windows matrix on Go 1.25 and 1.26.7. CI measured union coverage
+of 84.6% for memory/RPC and 79.6% for CLI internals. These results belong to
+that commit; later visual revisions require their own CI run.
 
 ## Local performance
 
@@ -79,11 +90,12 @@ and no provider call. Alternating `j`/`k` changes the selection on every sample:
 
 | Operation | p50 | p95 |
 |---|---:|---:|
-| Render | 2.015 ms | 3.573 ms |
-| Navigate and update inspector | 0.996 ms | 1.997 ms |
+| Render | 3.999 ms | 5.621 ms |
+| Navigate and update inspector | 1.000 ms | 2.058 ms |
 
 These UI measurements exclude corpus loading. `GM_TUI_PROFILE=1` enables the
 optional profile test; `BenchmarkWorkbench` covers allocation measurements.
+The figures above were refreshed after the visual and adaptive-spacing changes.
 
 Cost selection with 100,000 observations takes approximately 120 ms for
 disjoint request scopes and 127 ms for adjacent windows on the same machine.
@@ -100,6 +112,12 @@ Unicode entry, Usage modes, resizing, and normal exit. A draft survived the
 80×24 → 125×37 → 80×24 sequence and was saved successfully. Actual dimension
 changes trigger a full redraw; the draft and focus remain intact. Monochrome behavior was
 also observed with `NO_COLOR=1`.
+
+The revised visual layout was captured from the running binary with sample
+data. The Windows 10 / ConPTY / ttyd / xterm.js path sometimes displays a block
+cursor outside editors. A renderer trace emitted the hide-cursor sequence
+after entering the alternate screen and no show-cursor sequence before exit;
+the exact downstream compatibility cause remains unisolated.
 
 This does not certify Windows Terminal, VS Code's terminal, WSL, SSH/tmux or
 native macOS/Linux emulators. The operating-system CI matrix is separate from

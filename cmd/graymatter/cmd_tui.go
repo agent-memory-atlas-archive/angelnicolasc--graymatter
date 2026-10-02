@@ -289,7 +289,12 @@ type tuiModel struct {
 
 func newTUIModel(store cliStore, dir string, readOnly bool, theme string, mouse bool) tuiModel {
 	nl := func(title string) list.Model {
-		l := list.New(nil, list.NewDefaultDelegate(), 40, 20)
+		d := list.NewDefaultDelegate()
+		d.SetSpacing(0)
+		if title == "Namespaces" {
+			d.SetHeight(1)
+		}
+		l := list.New(nil, d, 40, 20)
 		l.Title = title
 		l.SetShowTitle(false)
 		l.SetShowStatusBar(false)
@@ -871,27 +876,34 @@ func (m *tuiModel) chooseNamespace(agent string) tea.Cmd {
 	return m.loadFacts(agent)
 }
 func (m *tuiModel) switchTab(t tabID) tea.Cmd {
+	changed := m.activeTab != t
 	m.activeTab = t
 	m.focus = 0
 	m.memPane = memPaneFacts
 	m.previewID = ""
 	m.syncPreview(true)
+	var load tea.Cmd
 	switch t {
 	case tabMemory:
 		if m.namespace != "" && !m.state("memory").Loading {
-			return m.loadFacts(m.namespace)
+			load = m.loadFacts(m.namespace)
 		}
 	case tabSessions:
-		return tea.Batch(m.loadSessions(), m.loadCheckpoints())
+		load = tea.Batch(m.loadSessions(), m.loadCheckpoints())
 	case tabGraph:
-		return m.loadNodes()
+		load = m.loadNodes()
 	case tabUsage:
-		return m.loadUsage()
+		load = m.loadUsage()
 	case tabStats:
 		m.loading("status")
-		return tea.Batch(m.loadDashboard(), m.loadHealth())
+		load = tea.Batch(m.loadDashboard(), m.loadHealth())
 	}
-	return nil
+	if changed {
+		// Different views use different panel geometry. Clear retained cells
+		// once before dispatching loads, including their concurrent batches.
+		return tea.Sequence(tea.ClearScreen, load)
+	}
+	return load
 }
 func (m *tuiModel) refresh() tea.Cmd {
 	switch m.activeTab {

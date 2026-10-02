@@ -214,3 +214,36 @@ func TestUsageWindowsUnknownExpiredAndMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestUsageCompactPresentationPreservesAccountAndFailures(t *testing.T) {
+	m := tuiModel{}
+	m.initUsage()
+	m.setTheme("dark")
+	m.usage.loaded = true
+	m.usage.snapshot = usageFixture()
+	account := "organization-with-a-long-unique-account-suffix-12345"
+	m.usage.snapshot.Costs[0].AccountID = account
+	m.usage.snapshot.Quotas[0].Label = "Production organization subscription"
+	m.usage.snapshot.Quotas[0].Window = "monthly-calendar"
+	m.usage.snapshot.Contexts[0].Components[0].Name = "input_cache_read"
+	m.usage.showContext = true
+	m.usage.snapshot.Connections = []usage.ConnectionStatus{{Provider: "billing", AccountID: "work", State: "error", Error: "permission denied"}}
+	for _, width := range []int{36, 76, 96, 132} {
+		out := ansi.Strip(strings.Join(m.usageLines(width), "\n"))
+		// Whitespace introduced by wrapping must not erase account identity.
+		compact := strings.Join(strings.Fields(out), "")
+		for _, required := range []string{account, "Productionorganizationsubscription", "monthly-calendar", "input_cache_read", "permissiondenied"} {
+			if !strings.Contains(compact, required) {
+				t.Fatalf("compact provenance hid %q at %d: %s", required, width, out)
+			}
+		}
+		if strings.Contains(out, "config.json") {
+			t.Fatal("configuration path occupies collapsed overview")
+		}
+	}
+	m.usage.showSources = true
+	out := ansi.Strip(strings.Join(m.usageLines(132), "\n"))
+	if !strings.Contains(out, "config.json") {
+		t.Fatal("expanded source configuration unavailable")
+	}
+}

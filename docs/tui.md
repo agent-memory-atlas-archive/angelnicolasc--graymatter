@@ -5,6 +5,12 @@ navigation, Unicode cell widths, optional mouse navigation, and dark, light and
 terminal themes. It uses the existing store and daemon; there is no second
 memory database.
 
+The dark theme uses charcoal surfaces, teal navigation and restrained semantic
+colors. Memory text comes before record metadata; Usage keeps quantities in
+aligned rows and source details behind `v`. Header and list spacing adapt to
+terminal height so larger windows have breathing room without consuming the
+same proportion of a small terminal.
+
 ```sh
 graymatter tui
 graymatter tui --theme light

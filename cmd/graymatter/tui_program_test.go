@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +118,119 @@ func TestWorkbenchProgramResizeRevisionAndQuit(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("Ctrl+C failed to terminate Program")
+	}
+}
+
+type tabTransitionProbe struct{}
+type tabTransitionObservation struct {
+	tab    tabID
+	events []string
+}
+
+func TestWorkbenchProgramTabTransitionsClearBeforeLoads(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	m := newTUIModel(nil, t.TempDir(), true, "dark", false)
+	m.ctx = ctx
+	m.demo = true
+	m.usage.stateDir = m.dataDir
+	m.startup = func() tea.Msg { return statusMsg{"ready"} }
+	observations := make(chan tabTransitionObservation, 1)
+	var events []string
+	clearType := reflect.TypeOf(tea.ClearScreen())
+	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithInput(nil), tea.WithOutput(io.Discard), tea.WithWindowSize(m.width, m.height), tea.WithoutSignalHandler(), tea.WithFilter(func(model tea.Model, msg tea.Msg) tea.Msg {
+		if reflect.TypeOf(msg) == clearType {
+			events = append(events, "clear")
+		}
+		switch msg.(type) {
+		case nodesLoadedMsg:
+			events = append(events, "graph")
+		case tuiUsageLoadedMsg:
+			events = append(events, "usage")
+		case dashboardLoadedMsg:
+			events = append(events, "dashboard")
+		case healthLoadedMsg:
+			events = append(events, "health")
+		case tabTransitionProbe:
+			observations <- tabTransitionObservation{model.(tuiModel).activeTab, append([]string(nil), events...)}
+			return nil
+		}
+		return msg
+	}))
+	done := make(chan error, 1)
+	go func() { _, err := p.Run(); done <- err }()
+	defer p.Kill()
+	send := func(msg tea.Msg) {
+		t.Helper()
+		sent := make(chan struct{})
+		go func() { p.Send(msg); close(sent) }()
+		select {
+		case <-sent:
+		case <-ctx.Done():
+			t.Fatal("program did not accept input")
+		}
+	}
+	await := func(tab tabID, count int) tabTransitionObservation {
+		t.Helper()
+		var last tabTransitionObservation
+		for {
+			send(tabTransitionProbe{})
+			select {
+			case last = <-observations:
+				if last.tab == tab && len(last.events) >= count {
+					return last
+				}
+			case <-ctx.Done():
+				t.Fatalf("transition stalled: %+v", last)
+			}
+			select {
+			case <-time.After(5 * time.Millisecond):
+			case <-ctx.Done():
+				t.Fatalf("transition stalled: %+v", last)
+			}
+		}
+	}
+	send(keyMsg('4'))
+	got := await(tabGraph, 2)
+	if strings.Join(got.events, ",") != "clear,graph" {
+		t.Fatalf("graph transition did not clear before loading: %v", got.events)
+	}
+	send(keyMsg('4'))
+	got = await(tabGraph, 3)
+	if strings.Join(got.events, ",") != "clear,graph,graph" {
+		t.Fatalf("same-tab refresh added clear or lost load: %v", got.events)
+	}
+	send(keyMsg('5'))
+	got = await(tabUsage, 5)
+	if strings.Join(got.events[3:], ",") != "clear,usage" {
+		t.Fatalf("Usage transition lost clear/load order: %v", got.events)
+	}
+	send(keyMsg('2'))
+	got = await(tabRecall, 6)
+	if got.events[5] != "clear" {
+		t.Fatalf("Usage→Recall did not clear: %v", got.events)
+	}
+	send(keyMsg('2'))
+	got = await(tabRecall, 6)
+	if len(got.events) != 6 {
+		t.Fatalf("same Recall tab unnecessarily cleared: %v", got.events)
+	}
+	send(keyMsg('6'))
+	got = await(tabStats, 9)
+	if got.events[6] != "clear" {
+		t.Fatalf("Status loaders preceded clear: %v", got.events)
+	}
+	batch := strings.Join(got.events[7:], ",")
+	if batch != "dashboard,health" && batch != "health,dashboard" {
+		t.Fatalf("Status transition lost a batch load: %v", got.events)
+	}
+	send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Program did not quit")
 	}
 }

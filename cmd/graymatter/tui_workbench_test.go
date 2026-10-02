@@ -220,7 +220,7 @@ func TestWorkbenchGraphInspectorScrollsAndPreservesSelection(t *testing.T) {
 
 func TestWorkbenchViewsBoundedInCellsAndSanitizeStoredText(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	for _, size := range [][2]int{{80, 24}, {100, 30}, {120, 36}, {160, 48}} {
+	for _, size := range [][2]int{{80, 24}, {80, 29}, {80, 30}, {100, 30}, {120, 36}, {160, 48}} {
 		for tab := tabMemory; tab <= tabStats; tab++ {
 			for _, focus := range []int{0, 1} {
 				t.Run(fmt.Sprintf("%dx%d/%d/%d", size[0], size[1], tab, focus), func(t *testing.T) {
@@ -309,9 +309,9 @@ func TestWorkbenchMouseVisiblePageAndFilteredSelection(t *testing.T) {
 	}
 	m.agentList.SetItems(items)
 	m.updateSizes()
-	m.agentList.Select(8)
-	m.handleMouse(tea.MouseClickMsg{X: 2, Y: 9, Button: tea.MouseLeft})
-	if m.agentList.Index() != 9 || m.namespace != "namespace-09" {
+	m.agentList.Select(16)
+	m.handleMouse(tea.MouseClickMsg{X: 2, Y: 7, Button: tea.MouseLeft})
+	if m.agentList.Index() != 17 || m.namespace != "namespace-17" {
 		t.Fatalf("namespace click lost page: %d %s", m.agentList.Index(), m.namespace)
 	}
 	m.activeTab = tabGraph
@@ -323,14 +323,65 @@ func TestWorkbenchMouseVisiblePageAndFilteredSelection(t *testing.T) {
 		t.Fatalf("click used unfiltered index: %+v", n)
 	}
 	for i, name := range tabNames {
-		pos := 0
-		for _, previous := range tabNames[:i] {
-			pos += len(previous) + 4
-		}
-		m.handleMouse(tea.MouseClickMsg{X: pos + 2, Y: 1, Button: tea.MouseLeft})
+		// Click the visible text, independent of the tabs' padding.
+		line := strings.Split(ansi.Strip(m.renderHeader()), "\n")[2]
+		pos := strings.Index(line, name)
+		m.handleMouse(tea.MouseClickMsg{X: pos + 1, Y: 2, Button: tea.MouseLeft})
 		if int(m.activeTab) != i {
 			t.Fatalf("tab hit for %s selected %d", name, m.activeTab)
 		}
+	}
+}
+
+func TestWorkbenchSpacedMemoryPaginationMouseAndResize(t *testing.T) {
+	for _, tc := range []struct{ height, perPage, firstRow, rowHeight int }{{24, 8, 6, 2}, {29, 10, 6, 2}, {30, 7, 7, 3}, {36, 9, 7, 3}, {48, 13, 7, 3}} {
+		t.Run(fmt.Sprint(tc.height), func(t *testing.T) {
+			m := workbenchModel(t, nil)
+			m.width, m.height = 120, tc.height
+			var items []list.Item
+			for i := 0; i < 50; i++ {
+				items = append(items, factItem{memory.Fact{ID: fmt.Sprint(i), Text: fmt.Sprintf("record %02d", i)}})
+			}
+			m.factList.SetItems(items)
+			m.syncPreview(true)
+			if got := m.factList.Paginator.PerPage; got != tc.perPage {
+				t.Fatalf("keyboard page size %d, want %d", got, tc.perPage)
+			}
+			m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+			if m.factList.Index() != tc.perPage {
+				t.Fatalf("PageDown selected %d, want %d", m.factList.Index(), tc.perPage)
+			}
+			_, listWidth, _ := m.columnWidths()
+			visible := ansi.Strip(m.renderList(m.factList, listWidth-2, m.contentHeight(), ""))
+			if !strings.Contains(visible, fmt.Sprintf("record %02d", 2*tc.perPage-1)) || strings.Contains(visible, fmt.Sprintf("record %02d", 2*tc.perPage)) {
+				t.Fatal("rendered page differs from keyboard page")
+			}
+			m.handleMouse(tea.MouseClickMsg{X: 22, Y: tc.firstRow + tc.rowHeight, Button: tea.MouseLeft})
+			want := tc.perPage + 1
+			if m.factList.Index() != want {
+				t.Fatalf("mouse selected %d, want %d", m.factList.Index(), want)
+			}
+			if tc.rowHeight == 3 {
+				m.handleMouse(tea.MouseClickMsg{X: 22, Y: tc.firstRow + 2, Button: tea.MouseLeft})
+				if m.factList.Index() != want {
+					t.Fatal("inter-item whitespace changed selection")
+				}
+			}
+			if unused := tc.firstRow + tc.perPage*tc.rowHeight; unused < m.height-2 {
+				m.handleMouse(tea.MouseClickMsg{X: 22, Y: unused, Button: tea.MouseLeft})
+				if m.factList.Index() != want {
+					t.Fatal("unused bottom row selected an offscreen item")
+				}
+			}
+			m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyTab})
+			for _, height := range []int{29, 30} {
+				next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: height})
+				m = next.(tuiModel)
+				if m.factList.Index() != want || m.focus != 1 || m.memPane != memPaneDetail {
+					t.Fatal("spacing breakpoint lost selected fact or inspector focus")
+				}
+			}
+		})
 	}
 }
 

@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/harness"
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/usage"
@@ -216,7 +214,7 @@ func prepareUsageDisplay(sources [2]usage.Snapshot, failures [2]string, previous
 }
 
 func (m tuiModel) usageMaxOffset() int {
-	return max(0, len(m.usageLines(max(1, m.width)))-max(0, m.height-10))
+	return max(0, len(m.usageLines(max(1, m.width-4)))-max(0, m.bodyHeight()-2))
 }
 
 func staleUsageSnapshot(s usage.Snapshot) usage.Snapshot {
@@ -239,238 +237,6 @@ func staleUsageSnapshot(s usage.Snapshot) usage.Snapshot {
 	return s
 }
 
-func (m tuiModel) renderUsage(width, height int) string {
-	if width < 1 || height < 1 {
-		return ""
-	}
-	mode := m.usage.mode
-	if mode == "" {
-		mode = "auto"
-	}
-	tabs := []string{}
-	for _, item := range []struct{ key, name string }{{"auto", "a Auto"}, {"limits", "l Limits"}, {"spend", "s Spend"}} {
-		if mode == item.key {
-			tabs = append(tabs, lipgloss.NewStyle().Foreground(m.theme.Accent).Render("["+item.name+"]"))
-		} else {
-			tabs = append(tabs, item.name)
-		}
-	}
-	header := "Usage  " + strings.Join(tabs, "  ")
-	if m.usage.loading {
-		header += "  loading..."
-	}
-	lines := m.usageLines(width)
-	bodyHeight := max(0, height-3)
-	offset := min(m.usage.offset, max(0, len(lines)-bodyHeight))
-	end := min(len(lines), offset+bodyHeight)
-	body := ""
-	if end > offset {
-		body = strings.Join(lines[offset:end], "\n")
-	}
-	help := "c context  v sources  g summary  r refresh  arrows scroll"
-	if len(lines) > bodyHeight {
-		help = fmt.Sprintf("%d-%d/%d  %s", min(offset+1, len(lines)), end, len(lines), help)
-	}
-	return fitCells(header+"\n"+strings.Repeat("─", width)+"\n"+fitCells(body, width, bodyHeight)+"\n"+m.muted(help), width, height)
-}
-
-func (m tuiModel) usageLines(width int) []string {
-	var lines []string
-	add := func(s string) {
-		// Wrap long scopes and failures before vertical pagination. Cutting a
-		// row must never hide an account identifier or the cause of a failure.
-		lines = append(lines, strings.Split(lipgloss.Wrap(tuiPlain(s), max(1, width), ""), "\n")...)
-	}
-	meter := func(percent *float64, cells int, suffix string) {
-		bar := lipgloss.NewStyle().Foreground(m.theme.Accent).Render(usageBar(percent, cells))
-		lines = append(lines, strings.Split(lipgloss.Wrap(bar+"  "+tuiPlain(suffix), max(1, width), ""), "\n")...)
-	}
-	section := func(s string) {
-		if len(lines) > 0 {
-			lines = append(lines, "")
-		}
-		lines = append(lines, m.heading(s))
-		lines = append(lines, m.muted(strings.Repeat("─", max(1, width))))
-	}
-	mode := m.usage.mode
-	if mode == "" {
-		mode = "auto"
-	}
-	s := m.usage.snapshot
-	costs := s.Costs
-	now := time.Now()
-	if !m.usage.loaded && !m.usage.loading {
-		add("Usage not loaded. Press r to read configured sources.")
-	}
-	for i, err := range m.usage.errors {
-		if err != "" {
-			name := "Account sources"
-			if i == 1 {
-				name = "Project observations"
-			}
-			add(name + ": unavailable · " + err)
-		}
-	}
-	if mode != "spend" {
-		section("Subscription limits · account scope")
-		if len(s.Quotas) == 0 {
-			add("No quota source connected. Configure graymatter usage.")
-		}
-		for _, q := range s.Quotas {
-			label := usageLabel(q.Provider, q.AccountID, q.Label)
-			state := "reported"
-			if q.UsedPercent == nil {
-				state = "unavailable"
-			}
-			if q.Stale {
-				state = "stale"
-			}
-			if q.Error != "" {
-				state = "unavailable"
-			}
-			value := "—"
-			if q.UsedPercent != nil && !math.IsNaN(*q.UsedPercent) && !math.IsInf(*q.UsedPercent, 0) {
-				value = fmt.Sprintf("%.0f%% used", *q.UsedPercent)
-			}
-			window := q.Window
-			if q.WindowMinutes != nil {
-				window += fmt.Sprintf(" / %d min", *q.WindowMinutes)
-			}
-			add(label + " · " + window)
-			meter(q.UsedPercent, min(28, max(4, width-46)), value+" · "+usageReset(q.ResetAt, now))
-			add("  " + state + " · " + q.Source + " · " + usageAge(q.ObservedAt, now))
-			if q.Error != "" {
-				add("  " + q.Error)
-			}
-		}
-	}
-	if mode != "limits" {
-		section("API spend · source-specific periods")
-		if len(costs) == 0 && m.usage.legacy.Requests == 0 {
-			add("No spend recorded. Connect billing or import observations.")
-		}
-		for _, c := range costs {
-			amount := "—"
-			if c.Amount != "" {
-				amount = c.Amount + " " + strings.ToUpper(c.Currency)
-			}
-			add(usageLabel(c.Provider, c.AccountID, "") + "  " + amount)
-			label := c.Kind
-			if c.Partial {
-				label += " · partial"
-			}
-			if c.Stale {
-				label += " · stale"
-			}
-			add("  " + label + " · " + c.Scope)
-			add("  " + usagePeriod(c.StartAt, c.EndAt) + " · " + c.Source + " · " + usageAge(c.ObservedAt, now))
-		}
-		if len(s.Events) > 0 {
-			section(fmt.Sprintf("Observed request events · %d records", len(s.Events)))
-			events := s.Events
-			for _, event := range events[:min(5, len(events))] {
-				add(event.Provider + " / " + event.AccountID + " · " + event.Model)
-				add("  " + event.Operation + " · " + event.Time.UTC().Format(time.RFC3339))
-				keys := make([]string, 0, len(event.Quantities))
-				for key := range event.Quantities {
-					keys = append(keys, key)
-				}
-				sort.Strings(keys)
-				var quantities []string
-				for _, key := range keys {
-					quantities = append(quantities, fmt.Sprintf("%s=%d", key, event.Quantities[key]))
-				}
-				add("  " + strings.Join(quantities, " · "))
-			}
-			if len(events) > 5 {
-				add("Showing 5 most recent events. Full records: usage show --json.")
-			}
-		}
-		if m.usage.legacy.Requests > 0 {
-			section("Legacy harness aggregate · separate, may overlap")
-			amount := fmt.Sprintf("~%.4f USD", m.usage.legacy.TotalUSD)
-			if m.usage.legacy.Unpriced {
-				amount += " known subtotal · unpriced usage excluded"
-			}
-			add(amount)
-			add(fmt.Sprintf("%d requests · last 30 UTC calendar days · this store", m.usage.legacy.Requests))
-			add("Estimated at current catalog rates. Not added to source costs.")
-		}
-		if m.usage.legacyError != "" {
-			add("Harness ledger unavailable: " + m.usage.legacyError)
-		}
-	}
-	contextLabel := "Context · c to expand"
-	if m.usage.showContext {
-		contextLabel = "Context · c to collapse"
-	}
-	section(contextLabel)
-	if len(s.Contexts) == 0 {
-		add("No session context observed. Files on disk are not live context.")
-	} else {
-		for _, c := range s.Contexts {
-			method := "reported"
-			if c.Estimated {
-				method = "estimated"
-			}
-			if c.Stale {
-				method += " · stale"
-			}
-			add(usageLabel(c.Provider, c.AccountID, "") + " · session " + c.SessionID)
-			value := "—"
-			if c.UsedTokens != nil {
-				value = fmt.Sprintf("%d tok", *c.UsedTokens)
-			}
-			if c.LimitTokens != nil {
-				value += fmt.Sprintf(" / %d", *c.LimitTokens)
-			}
-			if c.UsedPercent != nil {
-				value += fmt.Sprintf(" · %.1f%%", *c.UsedPercent)
-			}
-			add(value + " · " + method + " · " + usageAge(c.ObservedAt, now))
-			if m.usage.showContext {
-				for _, part := range c.Components {
-					tag := "reported"
-					if part.Estimated {
-						tag = "estimated"
-					}
-					var percent *float64
-					if c.UsedTokens != nil && *c.UsedTokens > 0 {
-						value := float64(part.Tokens) * 100 / float64(*c.UsedTokens)
-						percent = &value
-					}
-					add(fmt.Sprintf("  %-22s %8d tok  %s · %s", part.Name, part.Tokens, usageBar(percent, min(20, max(4, width-58))), tag))
-				}
-				if len(c.Components) > 0 {
-					add("  Component bars show share of observed used context.")
-				}
-				if c.ComponentDelta != nil && *c.ComponentDelta != 0 {
-					add(fmt.Sprintf("  Component sum differs from observed total by %+d tok; estimates retained.", *c.ComponentDelta))
-				}
-				add("  " + c.Model + " · " + c.Source)
-			}
-		}
-	}
-	if m.usage.showSources || len(s.Connections) == 0 {
-		section("Sources & coverage · v to toggle")
-		for _, c := range s.Connections {
-			add(c.Provider + " / " + c.AccountID + " · " + c.Kind + " · " + c.State)
-			if c.Error != "" {
-				add("  " + c.Error)
-			}
-		}
-		if len(s.Connections) == 0 {
-			add("Use graymatter usage --help to connect or import a source.")
-		}
-		add("Account source settings: " + filepath.Join(m.usage.stateDir, "usage", "config.json"))
-		add("— = unavailable. Quotas, currencies and overlapping costs are not summed.")
-	}
-	for _, warning := range s.Warnings {
-		add("Notice: " + warning)
-	}
-	return lines
-}
-
 func (m tuiModel) usageSummary(width int) string {
 	var text string
 	s := m.usage.snapshot
@@ -481,7 +247,7 @@ func (m tuiModel) usageSummary(width int) string {
 		if q.UsedPercent != nil {
 			value = fmt.Sprintf("%.0f%% used", *q.UsedPercent)
 		}
-		text = usageLabel(q.Provider, q.AccountID, q.Label) + " · " + q.Window + " · " + value
+		text = value + " · " + q.Window + " · " + usageLabel(q.Provider, q.AccountID, q.Label)
 		if q.Stale || q.Error != "" {
 			text += " · stale"
 		}
@@ -491,7 +257,7 @@ func (m tuiModel) usageSummary(width int) string {
 		if c.Amount != "" {
 			amount = c.Amount + " " + strings.ToUpper(c.Currency)
 		}
-		text = usageLabel(c.Provider, c.AccountID, "") + " · " + amount + " · " + c.Kind + " · " + c.Scope
+		text = amount + " · " + c.Kind + " · " + usageLabel(c.Provider, c.AccountID, "") + " · " + c.Scope
 		if c.Partial {
 			text += " · partial"
 		}
@@ -506,7 +272,7 @@ func (m tuiModel) usageSummary(width int) string {
 	} else {
 		text = "no usage source connected"
 	}
-	return fitCells("u Usage › "+tuiPlain(text), width, 1)
+	return fitCells(usageInk("u Usage", m.theme.Accent, true)+"  "+usageInk(text, m.theme.Muted, false), width, 1)
 }
 
 func usageLabel(provider, account, label string) string {
@@ -527,7 +293,7 @@ func usageBar(percent *float64, width int) string {
 		return strings.Repeat("·", width)
 	}
 	used := int(math.Round(math.Max(0, math.Min(100, *percent)) * float64(width) / 100))
-	return strings.Repeat("█", used) + strings.Repeat("░", width-used)
+	return strings.Repeat("━", used) + strings.Repeat("─", width-used)
 }
 
 func usageReset(at *time.Time, now time.Time) string {
@@ -537,7 +303,7 @@ func usageReset(at *time.Time, now time.Time) string {
 	if !at.After(now) {
 		return "reset passed · refresh"
 	}
-	return "reset in " + at.Sub(now).Round(time.Minute).String()
+	return "reset in " + usageDuration(at.Sub(now))
 }
 
 func usageAge(at, now time.Time) string {
@@ -550,7 +316,21 @@ func usageAge(at, now time.Time) string {
 	if now.Sub(at) < time.Minute {
 		return "just updated"
 	}
-	return now.Sub(at).Round(time.Minute).String() + " ago"
+	return usageDuration(now.Sub(at)) + " ago"
+}
+
+func usageDuration(d time.Duration) string {
+	minutes := max(1, int(d.Round(time.Minute)/time.Minute))
+	if minutes >= 24*60 {
+		return fmt.Sprintf("%dd %dh", minutes/(24*60), (minutes/60)%24)
+	}
+	if minutes >= 60 {
+		if minutes%60 == 0 {
+			return fmt.Sprintf("%dh", minutes/60)
+		}
+		return fmt.Sprintf("%dh %dm", minutes/60, minutes%60)
+	}
+	return fmt.Sprintf("%dm", minutes)
 }
 
 func usagePeriod(start, end time.Time) string {
