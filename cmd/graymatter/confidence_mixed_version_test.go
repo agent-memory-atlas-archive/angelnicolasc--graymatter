@@ -37,7 +37,13 @@ func confidencePreviousBinary(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("archive pinned baseline %s: %v", confidencePreviousRevision, err)
 	}
-	source := t.TempDir()
+	// Go resolves the child working directory before matching workspace modules.
+	// Resolve aliases such as macOS /var -> /private/var so GOWORK and cwd use
+	// the same source path when building the archived nested CLI module.
+	source, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve previous source directory: %v", err)
+	}
 	archiveHash := sha256.Sum256(data)
 	t.Logf("previous source archive sha256=%x", archiveHash)
 	reader := tar.NewReader(bytes.NewReader(data))
