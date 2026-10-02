@@ -1,0 +1,21 @@
+goos: windows
+goarch: amd64
+pkg: github.com/angelnicolasc/graymatter/pkg/memory
+cpu: AMD Ryzen 5 3400G with Radeon Vega Graphics
+BenchmarkConfidenceRecall/600/legacy-8         	     100	   1678619 ns/op	         8.000 results	  104396 B/op	     547 allocs/op
+BenchmarkConfidenceRecall/600/detailed-8       	     100	   1540375 ns/op	         8.000 results	  104345 B/op	     547 allocs/op
+BenchmarkConfidenceRecall/600/weighted-8       	     100	   1579866 ns/op	         8.000 results	  133322 B/op	     577 allocs/op
+BenchmarkConfidenceRecall/600/filtered-8       	     100	   1470730 ns/op	         8.000 results	  138628 B/op	     580 allocs/op
+BenchmarkConfidenceRecall/5000/legacy-8        	     100	   3105553 ns/op	         8.000 results	  407142 B/op	     901 allocs/op
+BenchmarkConfidenceRecall/5000/detailed-8      	     100	   3092344 ns/op	         8.000 results	  407088 B/op	     924 allocs/op
+BenchmarkConfidenceRecall/5000/weighted-8      	     100	   3122263 ns/op	         8.000 results	  642264 B/op	    1035 allocs/op
+BenchmarkConfidenceRecall/5000/filtered-8      	     100	   2585168 ns/op	         8.000 results	  683591 B/op	    1137 allocs/op
+BenchmarkConfidenceRecall/10000/legacy-8       	     100	   4311460 ns/op	         8.000 results	  745638 B/op	     987 allocs/op
+BenchmarkConfidenceRecall/10000/detailed-8     	     100	   4439964 ns/op	         8.000 results	  745748 B/op	    1011 allocs/op
+BenchmarkConfidenceRecall/10000/weighted-8     	     100	   4163442 ns/op	         8.000 results	 1193915 B/op	    1128 allocs/op
+BenchmarkConfidenceRecall/10000/filtered-8     	     100	   3263942 ns/op	         8.000 results	 1278567 B/op	    1314 allocs/op
+BenchmarkConfidenceRecall/30000/legacy-8       	     100	   8334364 ns/op	         8.000 results	 2057687 B/op	    1412 allocs/op
+BenchmarkConfidenceRecall/30000/detailed-8     	     100	   8227983 ns/op	         8.000 results	 2056564 B/op	    1409 allocs/op
+BenchmarkConfidenceRecall/30000/weighted-8     	     100	  10007738 ns/op	         8.000 results	 3816028 B/op	    1609 allocs/op
+BenchmarkConfidenceRecall/30000/filtered-8     	     100	   6193376 ns/op	         8.000 results	 3828328 B/op	    2097 allocs/op
+PASS

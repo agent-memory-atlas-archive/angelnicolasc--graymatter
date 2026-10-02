@@ -1,0 +1,123 @@
+package memory
+
+import (
+	"context"
+	"fmt"
+	"github.com/angelnicolasc/graymatter/pkg/embedding"
+	bolt "go.etcd.io/bbolt"
+	"testing"
+	"time"
+)
+
+func BenchmarkConfidenceRecall(b *testing.B) {
+	for _, size := range []int{600, 5000, 10000, 30000} {
+		for _, arm := range []string{"legacy", "detailed"} {
+			b.Run(fmt.Sprintf("%d/%s", size, arm), func(b *testing.B) {
+				s := confidenceBenchmarkStore(b, size)
+				defer func() { _ = s.Close() }()
+				recall := func() []string {
+					if arm == "detailed" {
+						texts, _, err := s.RecallDetailed(context.Background(), "bench-confidence", "routing cutoff", 8)
+						if err != nil {
+							b.Fatal(err)
+						}
+						return texts
+					}
+					texts, err := s.Recall(context.Background(), "bench-confidence", "routing cutoff", 8)
+					if err != nil {
+						b.Fatal(err)
+					}
+					return texts
+				}
+				warmup := recall()
+				if len(warmup) == 0 {
+					b.Fatal("empty results cannot count as a performance improvement")
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if got := recall(); len(got) != len(warmup) {
+						b.Fatalf("result length changed: got %d, want %d", len(got), len(warmup))
+					}
+				}
+				b.ReportMetric(float64(len(warmup)), "results")
+			})
+		}
+	}
+}
+func BenchmarkConfidencePut(b *testing.B) {
+	for _, size := range []int{600, 5000, 10000, 30000} {
+		for _, arm := range []string{"legacy", "verified"} {
+			b.Run(fmt.Sprintf("%d/%s", size, arm), func(b *testing.B) {
+				s := confidenceBenchmarkStore(b, size)
+				defer func() { _ = s.Close() }()
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if arm == "verified" {
+						if err := s.PutConfident(context.Background(), "bench-confidence", "routing cutoff benchmark write", "verified"); err != nil {
+							b.Fatal(err)
+						}
+					} else {
+						fact, err := s.PutReturningFact(context.Background(), "bench-confidence", "routing cutoff benchmark write")
+						if err != nil {
+							b.Fatal(err)
+						}
+						if fact.ID == "" || fact.Text != "routing cutoff benchmark write" {
+							b.Fatal("write did not return its committed identity")
+						}
+					}
+				}
+			})
+		}
+	}
+}
+func confidenceBenchmarkStore(b *testing.B, size int) *Store {
+	b.Helper()
+	s, err := Open(StoreConfig{DataDir: b.TempDir(), CandidateRetrieval: true, Embedder: embedding.AutoDetect(embedding.Config{Mode: embedding.ModeKeyword})})
+	if err != nil {
+		b.Fatal(err)
+	}
+	stamp := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for start := 0; start < size; start += 512 {
+		end := min(start+512, size)
+		if err := s.db.Update(func(tx *bolt.Tx) error {
+			bucket, err := tx.Bucket(bucketFacts).CreateBucketIfNotExists([]byte("bench-confidence"))
+			if err != nil {
+				return err
+			}
+			if err := tx.Bucket(bucketAgents).Put([]byte("bench-confidence"), []byte("1")); err != nil {
+				return err
+			}
+			categories := []string{"verified", "inferred", "unverified"}
+			for i := start; i < end; i++ {
+				text := fmt.Sprintf("archive service deployment shard %06d retention", i)
+				if i%127 == 0 {
+					text += " routing cutoff"
+				}
+				f := Fact{ID: fmt.Sprintf("%026d", i), AgentID: "bench-confidence", Text: text, CreatedAt: stamp.Add(time.Duration(i) * time.Second), AccessedAt: stamp, Confidence: categories[i%3], Weight: 1}
+				raw, err := f.marshal()
+				if err != nil {
+					return err
+				}
+				if err := bucket.Put([]byte(f.ID), raw); err != nil {
+					return err
+				}
+				if err := idxAddFact(tx, f, false); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			_ = s.Close()
+			b.Fatal(err)
+		}
+	}
+	// Stamp committed bbolt statistics. Stats inside the final dirty transaction
+	// can omit new keys and would make the first recall rebuild the whole index.
+	if err := s.db.Update(func(tx *bolt.Tx) error { return idxSetCount(tx, "bench-confidence", false) }); err != nil {
+		_ = s.Close()
+		b.Fatal(err)
+	}
+	return s
+}

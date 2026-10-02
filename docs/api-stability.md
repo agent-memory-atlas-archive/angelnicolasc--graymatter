@@ -19,15 +19,17 @@ Starting with **v0.1.0**, GrayMatter follows a best-effort compatibility policy 
 |---|---|
 | `New(dataDir string) *Memory` | |
 | `NewWithConfig(cfg Config) (*Memory, error)` | |
-| `(*Memory).Remember(agentID, text string) error` | |
-| `(*Memory).Recall(agentID, query string) ([]string, error)` | |
+| `(*Memory).Remember(ctx context.Context, agentID, text string) error` | |
+| `(*Memory).Recall(ctx context.Context, agentID, query string) ([]string, error)` | |
 | `(*Memory).Consolidate(ctx context.Context, agentID string) error` | |
-| `(*Memory).RememberShared(text string) error` | |
-| `(*Memory).RecallShared(query string) ([]string, error)` | |
-| `(*Memory).RecallAll(agentID, query string) ([]string, error)` | |
+| `(*Memory).RememberShared(ctx context.Context, text string) error` | |
+| `(*Memory).RecallShared(ctx context.Context, query string) ([]string, error)` | |
+| `(*Memory).RecallAll(ctx context.Context, agentID, query string) ([]string, error)` | |
 | `(*Memory).Close() error` | |
 | `(*Memory).Advanced() AdvancedStore` | Narrow handle for CRUD, listing, raw bbolt access |
 | `(*Memory).Config() Config` | |
+| `(*Memory).RememberWithOptions`, `RememberSharedWithOptions` | Unreleased. Accept `context.Context` and `memory.WriteOptions`, return the exact committed `memory.Fact`; normal writes retain automatic consolidation policy |
+| `(*Memory).RecallWithOptions`, `RecallExplainWithOptions`, `RecallSharedWithOptions`, `RecallAllWithOptions` | Unreleased. Accept `context.Context` and `memory.RecallOptions`; configured `TopK` applies |
 | `Config` struct — all fields present in v0.1.0 | New fields may be added |
 | `DefaultConfig() Config` | |
 | `EmbeddingMode` type and constants | |
@@ -39,6 +41,12 @@ Starting with **v0.1.0**, GrayMatter follows a best-effort compatibility policy 
 | `Open(cfg StoreConfig) (*Store, error)` | |
 | `(*Store).Put(ctx, agentID, text string) error` | |
 | `(*Store).PutReturningFact(ctx, agentID, text string) (Fact, error)` | Added after v0.18.0. Concrete `Store` capability, intentionally not part of `AdvancedStore`; returns the exact fact committed so callers can persist its identity without a post-write lookup |
+| `(*Store).PutWithOptionsReturningFact(ctx, agentID, text, WriteOptions) (Fact, error)` | Unreleased. Text, confidence, canonical ID and index maintenance commit in the same fact transaction |
+| `(*Store).ReviseWithOptions`, `ReviseFactsWithOptions` | Unreleased. Conservative omitted confidence, exact replacement identity; return a known committed replacement alongside a later retirement error |
+| `(*Store).RecallWithOptions`, `RecallExplainWithOptions`, `RecallSharedWithOptions`, `RecallAllWithOptions`, `BatchRecallWithOptions` | Unreleased. Per-call options; nonpositive `topK` uses 8. Existing raw Store recall signatures keep their legacy zero-count behavior |
+| `(*Store).DefaultConfidenceWeight() float64` | Unreleased optional adapter capability; advertises the configured default so request routing and negotiated RPC retain the same effective policy |
+| `WriteOptions`, `RecallOptions`, `RecallResult`, `RecallExplainResult`, `RetrievalMetadata`, `ConfidenceRanking` | Unreleased. Optional pointer fields distinguish omission from explicit labels/zero; additive result metadata is omitted for legacy calls |
+| `EligibleVectorStore`, `ExhaustiveVectorStore` | Unreleased optional capabilities; `VectorStore` and `AdvancedStore` require no new methods |
 | `(*Store).Delete(agentID, factID string) error` | |
 | `(*Store).List(agentID string) ([]Fact, error)` | |
 | `(*Store).ListAgents() ([]string, error)` | |
@@ -76,17 +84,23 @@ Starting with **v0.1.0**, GrayMatter follows a best-effort compatibility policy 
 
 ### Recall result ordering
 
-**Recall result ordering is deterministic: descending fused score, oldest
+**Recall result ordering is deterministic: descending final score, oldest
 first, then ID.**
+
+With zero confidence weight the final score is the existing fused RRF score.
+An explicit confidence filter first restricts the corpus. Without a filter and
+with zero weight, scores and selection retain the previous arithmetic.
 
 The same query against the same store returns the same facts in the same order,
 on every call, on every platform. Facts that score equally are ordered by
 `CreatedAt` ascending, and facts created in the same instant by fact ID
 ascending, which makes the order total.
 
-This is a guarantee callers may rely on. It applies to `Recall`, `RecallShared`
-and `RecallAll`, and to every configuration of `SignalWeights` and
-`MinRelevance`.
+This is a guarantee callers may rely on within each namespace. It applies to
+`Recall` and `RecallShared`, and every configuration of `SignalWeights` and
+`MinRelevance`. `RecallAll` combines those input rankings by namespace RRF and
+breaks ties by agent-list position, shared-list position, then text. Batch merge
+orders by best input rank, number of query hits, then first appearance.
 
 **Exception, v0.12.0:** when a knowledge graph is wired via `SetKG` (directly,
 via `AdvancedStore.SetKG`, or by enabling the daemon's `--kg` /
@@ -94,7 +108,75 @@ via `AdvancedStore.SetKG`, or by enabling the daemon's `--kg` /
 after the ranked facts. The first `topK` entries keep the deterministic order
 above; appended entries are enrichment hints, capped and deduplicated, and
 never displace a ranked fact. Without a wired graph the exception does not
-exist and `Recall` returns exactly `topK`.
+exist and `Recall` returns at most `topK` distinct eligible facts.
+
+An explicit `min_confidence`, including `unverified`, suppresses this text-only
+enrichment because graph labels have no confidence receipts. Retrieval metadata
+reports `kg: "suppressed_min_confidence"`; without a filter it describes hints
+as `"hints_without_confidence_receipts"`. Explain never adds that hint tail.
+
+### Confidence options (Unreleased)
+
+These APIs and MCP/CLI options are implemented on main and are not available in
+v0.19.1. Labels are writer declarations, not probabilities or verification by
+GrayMatter. New writes accept exactly `verified`, `inferred` or `unverified`.
+Absent/empty historical labels are effectively inferred; unknown historical
+labels are preserved and treated as unverified. Explicit invalid/null options
+are rejected before effects.
+
+An omitted add label retains the legacy empty representation. An omitted revise
+label becomes `min(inferred, lowest effective confidence of the validated live
+targets)`; an explicit label overrides it. Summaries use the same conservative
+minimum over valid consumed IDs, and LLM-extracted facts are unverified. The
+replacement fact's write is atomic; subsequent retirements remain separate
+phases and their failures are reported. A revision never inherits a pin.
+Narrow lifecycle mutations preserve unrelated confidence metadata.
+
+`RecallOptions.MinConfidence` filters before document frequencies, signal ranks,
+recency, fusion, `MinRelevance`, deduplication and top-k. An optional finite
+`ConfidenceWeight` in `[0, 0.5]` multiplies base RRF score `B` by
+`1 + weight * c`, where verified has `c = +1`, inferred/legacy `c = 0` and
+unverified/unknown `c = -1`. `ConfidencePolicy` is `confidence-v1`.
+`ranks.fused_score` remains `B`; the additive receipt `ranking` object identifies
+the final score that controls selection. Explicit zero weight preserves filters.
+Query options do not mutate global configuration.
+`Config.ConfidenceWeight` and `StoreConfig.ConfidenceWeight` set the configured
+request default within the same finite range. Omitted per-call weights use that
+default; explicit zero overrides it. An omitted RPC weight uses the configured
+default advertised by the actual server connection, unless the client supplies
+`DialOptions.DefaultConfidenceWeight`. A server that does not advertise a default
+uses the client's product default. Adapters send the resolved value explicitly;
+batch resolves it once after connection preflight and before fan-out, keeping
+one policy if the daemon restarts during the batch. Reconnection renegotiates
+the default for later requests.
+
+Both product and low-level defaults remain zero in this first delivery.
+A future positive product default requires prior notice in a published minor
+release and promotion in a subsequent minor release after the frozen quality
+gates pass. An Unreleased section is not published notice; this first delivery
+does not close issue #126. Explicit zero will remain the legacy ranking opt-out.
+
+New RPC methods negotiate `confidence-write-v1`, `confidence-recall-v1`,
+`confidence-lifecycle-v1` and `confidence-shared-write-v1`. The separate shared
+write capability provides `PutSharedWithOptionsReturningFact` and preserves
+`RememberShared`'s policy of scheduling no automatic consolidation. A generic
+write with `agent_id = "__shared__"` retains the ordinary `Remember` consolidation
+policy. Existing RPC methods retain zero confidence preference.
+A new client can use an old daemon for an effectively legacy request, but new
+options or an active positive default require a supporting capability; otherwise
+the request returns an update/restart error before effects. Reconnection
+renegotiates capabilities. Writes with uncertain commit results are not replayed.
+The REST API retains its legacy endpoints and zero preference; authenticated
+MCP over HTTP includes the new options.
+
+Filtered vector retrieval requires the native eligible-ID capability or an
+optional custom capability that proves exhaustion. `VectorStore.Query` promises
+only at-most-n results; a short list cannot prove completeness. Progressive
+queries reuse one embedding and reject incomplete/no-progress prefixes.
+Keyword-only search remains supported without a vector capability.
+Concurrent confidence updates cannot mix eligibility with different receipt
+metadata. Once a query embedding exists, an overlapping alias edit that changes
+the effective query returns an explicit retry error before another embedding.
 
 Before v0.11.0 the ordering of equal-scoring facts was unspecified in practice:
 the three signal rankings were sorted with a comparator that read only the
@@ -162,9 +244,9 @@ verified against a live `tools/list` exchange at the time of writing.
 
 | Tool | Required parameters | Optional parameters |
 |---|---|---|
-| `memory_search` | `agent_id`, `query` | `top_k` (default `8`), `explain` (boolean, default `false`) |
-| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`) |
-| `memory_add` | `agent_id`, `text` | — |
+| `memory_search` | `agent_id`, `query` | `top_k` (default `8`), `explain` (boolean, default `false`), `min_confidence`, `confidence_weight` (Unreleased) |
+| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`), `min_confidence`, `confidence_weight` (Unreleased) |
+| `memory_add` | `agent_id`, `text` | `confidence` (Unreleased) |
 | `memory_alias` | `agent_id`, `term`, `equivalents` | — |
 | `checkpoint_save` | `agent_id` | `state` (string containing a JSON object) |
 | `checkpoint_resume` | `agent_id` | `on_missing` (`"error"` \| `"empty"`, default `"error"`) |
@@ -174,6 +256,12 @@ verified against a live `tools/list` exchange at the time of writing.
 `unpin`. The agent parameter on `memory_reflect` is expressed as a schema
 `anyOf` (at least one of the two spellings is required, both allowed); `agent` is deprecated,
 and when both spellings arrive `agent_id` wins.
+
+Unreleased `confidence` is accepted on reflect `add`/`update` only. Search
+options on writes, confidence on other tools/actions, explicit null, wrong
+types, unknown labels and non-finite/out-of-range weights are errors. The runtime
+validates these new options explicitly; it does not enable global strict MCP
+argument validation as a side effect.
 
 ### `structuredContent` payloads
 
@@ -188,6 +276,15 @@ and when both spellings arrive `agent_id` wins.
 | `checkpoint_resume` | `{"id", "created_at", "state"?, "message_count"?}` | `state` is the persisted JSON object; keys marked `?` may be absent when empty |
 | `checkpoint_resume` with `on_missing: "empty"` | `{"found": false, "agent_id"}` | Added in v0.20.0. The successful absence result; `found` is always `false` and is declared non-optional. The output schema declares this shape and the success shape under `oneOf` |
 | `memory_reflect` | `{"action", "agent", "ok"}` | `ok` is `true` on success |
+
+Unreleased confidence calls preserve these keys and add declared optional
+schema fields. Explicit-label add/update results carry `fact_id` and
+`confidence`. Search, explain and batch add optional `retrieval` with effective
+`min_confidence`, `confidence_weight`, `policy` and `kg`, including empty results.
+Explain receipts add optional `ranking` with `base_score`, `final_score`,
+`factor`, `effective_confidence`, `confidence_weight` and `policy`. Text reports
+the same policy and identifies final scores. Legacy calls omit the new metadata.
+Batch applies one global policy to all input queries and its merged view.
 
 Errors return text-only `isError: true` results without `structuredContent`;
 their wording may change. `checkpoint_resume` with no checkpoint returns such

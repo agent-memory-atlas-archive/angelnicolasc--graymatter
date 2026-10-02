@@ -244,7 +244,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 			topK = v
 		}
 	}
-	results, err := s.store.Recall(r.Context(), agent, query, topK)
+	results, err := s.legacyRecall(r.Context(), agent, query, topK)
 	if err != nil {
 		s.writeInternalError(w, "recall", err)
 		return
@@ -391,7 +391,7 @@ func (s *Server) handleForget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Recall 1 result to find the best match, then delete its fact ID.
-	results, err := s.store.Recall(r.Context(), req.Agent, req.Query, 1)
+	results, err := s.legacyRecall(r.Context(), req.Agent, req.Query, 1)
 	if err != nil {
 		s.writeInternalError(w, "recall", err)
 		return

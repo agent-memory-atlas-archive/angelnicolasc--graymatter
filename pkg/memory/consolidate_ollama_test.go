@@ -331,9 +331,19 @@ func TestOllamaConsolidation_FencedJSONAccepted(t *testing.T) {
 	}
 	defer s.Close()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var request ollamaRequest
+		if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		ids := idsInPrompt(request.Prompt)
+		if len(ids) == 0 {
+			t.Error("fenced proposal has no source facts")
+			return
+		}
 		// A valid proposal wrapped in the code fences models insist on.
-		inner := "```json\n{\"summary\":\"fenced digest.\",\"consumes\":[\"ANY\"]}\n```"
+		inner := fmt.Sprintf("```json\n{\"summary\":\"fenced digest.\",\"consumes\":[%q]}\n```", ids[0])
 		env, _ := json.Marshal(map[string]any{"response": inner})
 		_, _ = w.Write(env)
 	}))
@@ -350,10 +360,8 @@ func TestOllamaConsolidation_FencedJSONAccepted(t *testing.T) {
 	if id := s.factIDByText(agent, "fenced digest."); id == "" {
 		t.Error("fenced valid proposal was not applied")
 	}
-	// "ANY" is not a batch ID: clamped to nothing, so nothing was tombstoned
-	// and no counter moved — the summary alone entered the store.
-	if _, consumed := s.ConsolidationCounters(); consumed != 0 {
-		t.Errorf("hallucinated consumes moved the receipt counter: %d", consumed)
+	if _, consumed := s.ConsolidationCounters(); consumed != 1 {
+		t.Errorf("valid consumed ID did not move the receipt counter once: %d", consumed)
 	}
 }
 

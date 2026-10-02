@@ -450,6 +450,42 @@ graymatter bench                     # audit published numbers (--hooks, --store
 graymatter context-sync              # managed context block (opt-in)
 ```
 
+### Confidence options (Unreleased)
+
+Implemented on main; these options are unavailable in v0.19.1. A label is the
+writer's declaration, not verification performed by GrayMatter:
+`unverified < inferred < verified`. New writes validate exact labels and commit
+the label with the fact's text and ID. Omitted add labels remain legacy inferred.
+An omitted revision label takes the weakest live target confidence, capped at
+inferred; generated summaries use the same rule and LLM extractions are
+unverified. Pin and decay preserve labels.
+
+```bash
+graymatter remember backend "Reviewed archive retention is 30 days" --confidence verified
+graymatter revise backend "Reviewed archive retention is 30 days" "Reviewed archive retention is 60 days" --confidence verified
+graymatter recall backend "archive retention" --min-confidence inferred --confidence-weight 0.2 --explain --json
+graymatter recall --shared "project policy" --min-confidence verified
+graymatter recall --all backend "archive retention" --confidence-weight 0
+graymatter recall backend --query "archive retention" --query "routing cutoff" --min-confidence verified
+```
+
+`memory_add` and reflect add/update accept `confidence`; `memory_search` and
+`memory_search_batch` accept `min_confidence` and `confidence_weight`.
+Filtering precedes corpus statistics, ranks and top-k. A finite weight in
+`[0, 0.5]` applies `final = base_RRF * (1 + weight * c)`, with verified `c=1`,
+inferred/legacy `c=0`, and unverified/unknown `c=-1`. The default remains zero;
+explicit zero keeps an explicit filter. Explain preserves base RRF in
+`ranks.fused_score` and adds final-score receipts. Options add the effective
+retrieval policy in text and JSON, including empty results.
+
+Any explicit filter suppresses graph neighbor hints because they have no
+confidence receipts. Custom vector backends need an eligible-ID or explicit
+exhaustion capability for complete filtered search. Unsupported daemon options
+return an update/restart error. `--shared` and `--all` are mutually exclusive;
+explain supports a single agent-scoped query and cannot combine with those
+flags or batch. See [the full contract](docs/AGENTS.md#confidence-options-unreleased)
+and [compatibility and rollout](docs/api-stability.md#confidence-options-unreleased).
+
 ---
 
 ## Library usage

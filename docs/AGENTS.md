@@ -20,15 +20,114 @@ Seven tools are registered by `graymatter mcp serve` (see [`cmd/graymatter/inter
 
 | Tool | Required params | Optional params | Returns |
 |------|----------------|-----------------|---------|
-| `memory_search` | `agent_id` (string), `query` (string) | `top_k` (int, default `8`), `explain` (boolean, default `false`) | Numbered fact list with a count header (deduped), or a "No memories found" notice |
-| `memory_search_batch` | `agent_id` (string), `queries` (string array) | `top_k` (int, default `8`) | Merged deduped block plus per-query lists |
-| `memory_add` | `agent_id` (string), `text` (string) | — | Confirmation string |
+| `memory_search` | `agent_id` (string), `query` (string) | `top_k` (int, default `8`), `explain` (boolean, default `false`), `min_confidence`, `confidence_weight` | Numbered fact list with a count header (deduped), or a "No memories found" notice |
+| `memory_search_batch` | `agent_id` (string), `queries` (string array) | `top_k` (int, default `8`), `min_confidence`, `confidence_weight` | Merged deduped block plus per-query lists |
+| `memory_add` | `agent_id` (string), `text` (string) | `confidence` | Confirmation string; an explicit label includes the committed fact ID and label |
 | `memory_alias` | `agent_id` (string), `term` (string), `equivalents` (string array) | — | Confirmation naming the term and its equivalents |
 | `checkpoint_save` | `agent_id` (string) | `state` (JSON-encoded string) | Confirmation containing the checkpoint ID |
 | `checkpoint_resume` | `agent_id` (string) | `on_missing` (`"error"` \| `"empty"`, default `"error"`) | `Checkpoint "id" restored` + `Created:` (RFC3339) + indented `State:` JSON; by default an error result when none exists — with `on_missing: "empty"` a successful `{"found": false, "agent_id"}` result |
 | `memory_reflect` | `action` (`add`\|`update`\|`forget`\|`link`\|`pin`\|`unpin`), plus at least one of **`agent_id`** (canonical) or `agent` (deprecated alias; `agent_id` wins when both are set) | `text` (string), `target` (string — old fact text for `update`/`forget`/`pin`/`unpin`; target node ID for `link`) | Confirmation string |
 
 > ℹ️ **`memory_reflect` accepts both `agent_id` (canonical) and `agent` (deprecated alias).** Since the canonical flip ([ADR-014](decisions/014-agent-id-canonical.md)) at least one of the two is required — the schema enforces it as an `anyOf` allowing both — and `agent_id` wins when both are set. New integrations spell it `agent_id`, matching every other tool.
+
+`memory_reflect` additionally accepts `confidence` on `add` and `update`.
+
+### Confidence options (Unreleased)
+
+The options below are implemented on main and are absent from v0.19.1. Their
+first delivery keeps preference disabled by default. A positive product default
+requires notice in a published minor release, followed by a later minor release
+and successful frozen quality gates. An Unreleased entry is not that notice.
+
+Labels are exact strings: `unverified < inferred < verified`. They describe the
+writer's stance; GrayMatter does not establish truth or assign probabilities.
+An old fact with an absent/empty label is effectively inferred. An unknown
+historical label is preserved in provenance and treated as unverified for
+filtering and scoring. New interfaces reject explicit null, empty/unknown
+labels, surrounding whitespace and incorrect types before effects.
+
+| Operation | Label omitted | Label supplied |
+|---|---|---|
+| `memory_add`, reflect add, CLI remember | Keep legacy empty storage, effectively inferred | Commit the validated label with the exact new fact |
+| reflect update, CLI revise | Minimum of inferred and every validated live target's effective confidence | Commit the requested label on the exact replacement |
+| Generated consolidation summary | Minimum of inferred and the valid consumed sources | No automatic promotion |
+| `RememberExtracted` LLM result | Unverified, even if the extracted text equals the input | Original-text fallback remains ordinary legacy storage |
+| forget, pin, unpin, link | Preserve labels | `confidence` is invalid on these actions |
+
+Revision commits the replacement's text and metadata atomically, then retires
+the targets. A changed source is revalidated before the replacement commit.
+The workflow is not one transaction: a later retirement failure is reported and
+can leave the committed replacement alongside a still-live target. A failed
+replacement write leaves the targets live. No pin is inherited. Pin/unpin,
+decay, access bookkeeping, export and vector reconciliation preserve confidence.
+
+Search and batch accept global `min_confidence` and `confidence_weight` options:
+
+- Omitted minimum includes every live content fact. `unverified` includes all
+  effective categories, `inferred` includes inferred/legacy and verified, and
+  `verified` includes verified only. Aliases and tombstones never rank.
+- Eligibility is applied before IDF, signal ranks, recency, relevance floor,
+  deduplication and top-k, in both scan and indexed retrieval. Historical
+  tombstones remain available for explain lineage.
+- A finite weight in `[0, 0.5]` applies `final = B * (1 + weight * c)`, with
+  `c = +1` for verified, `0` for inferred/legacy and `-1` for unverified/unknown.
+  `B` is the existing three-signal RRF score with `k = 60`. Zero retains legacy
+  ranking and does not disable a filter. A label cannot create a positive score
+  from zero or guarantee priority over every more relevant fact.
+- Final score determines ordering and `MinRelevance`: descending score, then
+  `CreatedAt` ascending, then ID ascending. Text duplicates use the selected
+  eligible ID's receipt. Shared/all and batch preserve their existing fusion
+  policies after each input query applies its options.
+- Any explicit minimum suppresses graph neighbor labels, including `unverified`.
+  Those labels lack confidence receipts. Without a filter, up to three existing
+  graph hints may be appended; explain covers ranked facts only. Weak-match
+  vocabulary uses the eligible corpus, and filtered calls do not learn aliases.
+
+Options or a positive configured default add `retrieval` metadata to successful
+results, including empty ones, and the same effective policy in text. Explain
+keeps `ranks.fused_score` as `B`; its optional `ranking` object reports base and
+final scores, factor, effective confidence, weight and `confidence-v1` policy.
+Original confidence remains in provenance.
+
+Filtered vector retrieval reuses one query embedding. The native backend
+intersects eligible IDs before truncation. Custom backends must implement
+`EligibleVectorStore` or `ExhaustiveVectorStore`; the latter expands a stable
+prefix until `2 * topK` eligible neighbors or explicit exhaustion. A short
+response alone is not exhaustion. Unsupported/incomplete search, no progress,
+errors and cancellation fail explicitly rather than returning a partial success.
+Keyword-only retrieval requires no vector capability.
+Concurrent updates must not mix eligibility with a different confidence in the
+receipt. Once a query embedding exists, an overlapping alias edit that changes
+the effective query fails explicitly and can be retried; it does not generate a
+second embedding.
+
+New RPC methods negotiate versioned confidence capabilities. A legacy daemon
+may serve an effectively legacy request; explicit new options require an
+update/restart error when unsupported. An uncertain write is never replayed
+automatically. Older RPC endpoints and the REST API retain zero preference.
+Authenticated MCP over HTTP supports the same options as stdio.
+
+```jsonc
+{ "tool": "memory_add", "args": {
+  "agent_id": "backend", "text": "The reviewed archive retention is 30 days",
+  "confidence": "verified"
+}}
+{ "tool": "memory_search", "args": {
+  "agent_id": "backend", "query": "archive retention", "explain": true,
+  "min_confidence": "inferred", "confidence_weight": 0.2
+}}
+{ "tool": "memory_search_batch", "args": {
+  "agent_id": "backend", "queries": ["archive retention", "routing cutoff"],
+  "min_confidence": "verified", "confidence_weight": 0
+}}
+```
+
+CLI equivalents are `remember/revise --confidence` and
+`recall --min-confidence/--confidence-weight`. Options apply to `--shared`,
+`--all` (agent plus shared, merged) and repeated `--query`. Explain supports one
+agent-scoped query; combining it with `--shared`, `--all` or batch is rejected.
+`--shared` and `--all` remain mutually exclusive. There is no confidence option
+on forget/pin/unpin/link, and a search option used on writes is rejected.
 
 ### Hooks and MCP at session start
 
@@ -178,14 +277,14 @@ GrayMatter ranks facts via **Reciprocal Rank Fusion (RRF)** over three independe
 2. **Keyword relevance** (TF-IDF approximation over bbolt facts)
 3. **Recency** (exponential decay from `CreatedAt`)
 
-Each signal produces an independent ranking; RRF fuses the ranks (not the scores) into a single ordered list. Returns top-K, deduplicated by text. Access metadata is updated asynchronously (`AccessCount++`, `AccessedAt = now`).
+Each signal produces an independent ranking; RRF fuses the ranks (not the scores) into a single base score. Optional confidence preference adjusts that score as described above. Returns top-K, deduplicated by text. One batched transaction updates only returned facts' access metadata (`AccessCount++`, `AccessedAt = now`).
 
 Facts marked superseded are dropped before any of this — a fact an agent has corrected or forgotten never competes for a slot. Graph neighbours of the top hit would also be appended, but nothing wires the graph into the store in shipped builds, so in practice that step never runs ([ADR-003](decisions/003-knowledge-graph-autopopulation.md)).
 
 > RRF means **rank position matters, not raw scores** — a fact's contribution
 > depends on where it placed in each ranking, not on how close the numbers
-> were. As an agent you have no per-call control over this: there is no
-> weighting parameter on `memory_search`.
+> were. `confidence_weight` is an optional bounded adjustment after this
+> fusion; it does not alter the three signal weights.
 >
 > A Go caller configuring the store does. `StoreConfig.SignalWeights` sets how
 > much each signal contributes (default vector 1.0, keyword 1.0, recency 0.5)

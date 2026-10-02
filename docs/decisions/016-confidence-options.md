@@ -49,6 +49,11 @@ connection. Legacy endpoints retain zero weight. A new semantic request to an
 old daemon fails before effects; uncertain writes are never blindly replayed.
 Explicit zero also requires support when the caller requests policy metadata.
 
+An omitted RPC weight uses the configured default advertised by the actual
+server connection; an explicit `DialOptions.DefaultConfidenceWeight` overrides
+that client default. Adapters bind the effective weight before sending it, and
+a batch binds it once before fan-out. Compatibility endpoints stay at zero.
+
 ## Rollout and evidence
 
 The first delivery defaults to zero. No published notice of future preference
@@ -57,6 +62,13 @@ an actual minor-release notice and a later minor release with a passing default
 candidate. Preserve explicit zero opt-out and mixed-version negotiation. The
 REST application retains legacy behavior. This delivery references issue 126
 without closing it.
+
+Future promotion must also validate a newer positive-default client against
+an earlier confidence-v1 opt-in daemon advertising zero. The current tests
+cover configured-positive negotiation and pre-confidence capability absence;
+they do not approve that future distribution skew. Upgrade/restart guidance
+and the intended server/client default ownership must remain explicit in the
+promotion release.
 
 Freeze benchmarks/retrieval_quality/confidence-fixtures.json before measurement:
 12 calibration families and 12 disjoint validation families, each with English

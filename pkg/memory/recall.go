@@ -16,6 +16,8 @@ import (
 // can never disagree about what ranked where: there is exactly one pipeline,
 // and explain is a read-out of it, not a second implementation.
 type recallPipeline struct {
+	policy     recallPolicy
+	baseScores map[string]float64
 	facts      []Fact // live facts, tombstones filtered out
 	factByID   map[string]*Fact
 	ranked     []scored // full fused ranking, best first, post MinRelevance cut
@@ -62,10 +64,29 @@ func (s *Store) Recall(ctx context.Context, agentID, query string, topK int) ([]
 // delegates here and drops the block — and TestFeedbackAdditiveRanking pins
 // it. The block is additive text; nothing in the ranking reads it.
 func (s *Store) RecallDetailed(ctx context.Context, agentID, query string, topK int) ([]string, string, error) {
-	start := time.Now()
-	p, err := s.runRecallPipeline(ctx, agentID, query, topK)
-	if err != nil || p == nil {
+	p, err := s.resolveRecallPolicy(RecallOptions{})
+	if err != nil {
 		return nil, "", err
+	}
+	if topK < 0 {
+		topK = 0
+	}
+	return s.recallDetailedWithPolicy(ctx, agentID, query, topK, p)
+}
+
+func (s *Store) recallDetailedWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) ([]string, string, error) {
+	result, feedback, _, err := s.recallDetailedCollectWithPolicy(ctx, agentID, query, topK, policy, true)
+	return result, feedback, err
+}
+
+// recallDetailedCollectWithPolicy can defer bookkeeping until a namespace
+// merge selects its final output. The returned snapshots identify only the
+// canonical facts selected by this namespace's deduplicated ranking.
+func (s *Store) recallDetailedCollectWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy, touch bool) ([]string, string, []Fact, error) {
+	start := time.Now()
+	p, err := s.runRecallPipelineWithPolicy(ctx, agentID, query, topK, policy)
+	if err != nil || p == nil {
+		return nil, "", nil, err
 	}
 
 	// Collect top-k, deduplicated by text (the documented contract), updating
@@ -74,9 +95,10 @@ func (s *Store) RecallDetailed(ctx context.Context, agentID, query string, topK 
 	// slice would spend budget on duplicates and return fewer distinct facts
 	// than the caller asked for. Duplicates arise whenever a caller re-stores
 	// the same sentence across sessions — the store is append-only by design.
-	result := make([]string, 0, topK)
-	seen := make(map[string]bool, topK)
-	touched := make([]Fact, 0, topK)
+	capacity := min(topK, len(p.ranked))
+	result := make([]string, 0, capacity)
+	seen := make(map[string]bool, capacity)
+	touched := make([]Fact, 0, capacity)
 	for _, sc := range p.ranked {
 		if len(result) >= topK {
 			break
@@ -99,21 +121,25 @@ func (s *Store) RecallDetailed(ctx context.Context, agentID, query string, topK 
 		f.AccessedAt = p.nowT.UTC()
 		touched = append(touched, *f)
 	}
-	s.touchFacts(touched)
+	if touch {
+		s.touchFacts(touched)
+	}
 
 	// Usage-alias learning: the store learns its vocabulary from observed reformulations —
 	// weak match leaves a pending miss, the strong match that answers it
 	// records the evidence, the second observation promotes. Best-effort and
 	// off by default (StoreConfig.UsageAliasLearning); a learning write must
 	// never break a read.
-	s.learnFromRecall(ctx, agentID, query, p)
+	if !policy.filtered() {
+		s.learnFromRecall(ctx, agentID, query, p)
+	}
 
 	// Enrich with knowledge graph neighbors (optional; graph may be nil).
 	s.mu.RLock()
 	graph := s.graph
 	extractor := s.extractor
 	s.mu.RUnlock()
-	if graph != nil && extractor != nil && len(result) > 0 {
+	if !policy.filtered() && graph != nil && extractor != nil && len(result) > 0 {
 		// Extract entity IDs from the top-ranked fact and surface neighbors.
 		//
 		// Budget (ADR-003 condition 2): at most kgMaxNeighbors entries are
@@ -150,14 +176,25 @@ func (s *Store) RecallDetailed(ctx context.Context, agentID, query string, topK 
 	if s.cfg.OnRecall != nil {
 		s.cfg.OnRecall(agentID, query, len(result), time.Since(start))
 	}
-	return result, p.feedback, nil
+	return result, p.feedback, touched, nil
 }
 
 // RecallExplain performs the same hybrid retrieval as Recall and returns one
 // RecallReceipt per returned fact instead of the bare texts (see explain.go).
 func (s *Store) RecallExplain(ctx context.Context, agentID, query string, topK int) ([]RecallReceipt, error) {
+	p, err := s.resolveRecallPolicy(RecallOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if topK < 0 {
+		topK = 0
+	}
+	return s.recallExplainWithPolicy(ctx, agentID, query, topK, p)
+}
+
+func (s *Store) recallExplainWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) ([]RecallReceipt, error) {
 	start := time.Now()
-	p, err := s.runRecallPipeline(ctx, agentID, query, topK)
+	p, err := s.runRecallPipelineWithPolicy(ctx, agentID, query, topK, policy)
 	if err != nil || p == nil {
 		return nil, err
 	}
@@ -165,9 +202,10 @@ func (s *Store) RecallExplain(ctx context.Context, agentID, query string, topK i
 	// Identical walk to Recall's collection loop — same dedup contract, same
 	// access-metadata side effects — accumulating receipts instead of texts,
 	// read straight out of the pipeline's ranking state. No second pass.
-	receipts := make([]RecallReceipt, 0, topK)
-	seen := make(map[string]bool, topK)
-	touched := make([]Fact, 0, topK)
+	capacity := min(topK, len(p.ranked))
+	receipts := make([]RecallReceipt, 0, capacity)
+	seen := make(map[string]bool, capacity)
+	touched := make([]Fact, 0, capacity)
 	for _, sc := range p.ranked {
 		if len(receipts) >= topK {
 			break
@@ -202,8 +240,22 @@ func (s *Store) RecallExplain(ctx context.Context, agentID, query string, topK i
 // not an error; the OnRecall hook still fires on the live-but-all-tombstoned
 // path so observability sees the recall happened and returned nothing.
 func (s *Store) runRecallPipeline(ctx context.Context, agentID, query string, topK int) (*recallPipeline, error) {
+	policy, err := s.resolveRecallPolicy(RecallOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return s.runRecallPipelineWithPolicy(ctx, agentID, query, topK, policy)
+}
+
+func (s *Store) runRecallPipelineWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) (*recallPipeline, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if policy.metadata {
+		policy.embedding = &confidenceEmbeddingCache{}
+	}
 	if s.cfg.CandidateRetrieval {
-		p, err := s.runRecallPipelineIndexed(ctx, agentID, query, topK)
+		p, err := s.runRecallPipelineIndexedWithPolicy(ctx, agentID, query, topK, policy)
 		if err == nil {
 			return p, nil
 		}
@@ -214,13 +266,21 @@ func (s *Store) runRecallPipeline(ctx context.Context, agentID, query string, to
 			return nil, err
 		}
 	}
-	return s.runRecallPipelineScan(ctx, agentID, query, topK)
+	return s.runRecallPipelineScanWithPolicy(ctx, agentID, query, topK, policy)
 }
 
 // runRecallPipelineScan is the original path: load every fact the agent owns,
 // score all of them, fuse. It is the reference implementation the indexed path
 // is tested against, and the fallback whenever the index cannot answer.
 func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string, topK int) (*recallPipeline, error) {
+	policy, err := s.resolveRecallPolicy(RecallOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return s.runRecallPipelineScanWithPolicy(ctx, agentID, query, topK, policy)
+}
+
+func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) (*recallPipeline, error) {
 	start := time.Now()
 	stored, err := s.listLite(agentID)
 	if err != nil || len(stored) == 0 {
@@ -269,7 +329,9 @@ func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string
 			}
 			continue
 		}
-		facts = append(facts, f)
+		if policy.eligible(f.Confidence) {
+			facts = append(facts, f)
+		}
 	}
 	if len(facts) == 0 {
 		if s.cfg.OnRecall != nil {
@@ -312,8 +374,11 @@ func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string
 	}
 
 	// --- Signal 1: vector similarity ---
-	vectorRank := make(map[string]int, topK*2) // factID → rank (1-based)
-	vecResults, _ := s.vectorSearch(ctx, agentID, effectiveQuery, topK*2)
+	vectorRank := make(map[string]int, min(vectorBudget(topK), len(facts))) // factID → rank (1-based)
+	vecResults, vecErr := s.vectorSearchWithPolicy(ctx, agentID, effectiveQuery, vectorBudget(topK), factIndex, policy)
+	if vecErr != nil && (policy.filtered() || errors.Is(vecErr, errConfidenceQueryChanged)) {
+		return nil, vecErr
+	}
 	// Impose the same total order rankBefore uses everywhere else — score
 	// descending, then ID ascending — before turning results into ranks. The
 	// backend's own ordering is unspecified for equal similarities (chromem
@@ -385,6 +450,10 @@ func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string
 		w = &d
 	}
 	candidates := make(map[string]float64, len(facts))
+	var baseScores map[string]float64
+	if policy.weight != 0 {
+		baseScores = make(map[string]float64, len(facts))
+	}
 	for _, f := range facts {
 		rrf := 0.0
 		if r, ok := vectorRank[f.ID]; ok {
@@ -396,7 +465,10 @@ func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string
 		if r, ok := recRank[f.ID]; ok {
 			rrf += w.Recency / (k + float64(r))
 		}
-		candidates[f.ID] = rrf
+		if baseScores != nil {
+			baseScores[f.ID] = rrf
+		}
+		candidates[f.ID] = rrf * policy.factor(f.Confidence)
 	}
 
 	allScored := make([]scored, 0, len(candidates))
@@ -468,6 +540,8 @@ func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string
 	})
 
 	return &recallPipeline{
+		policy:          policy,
+		baseScores:      baseScores,
 		facts:           facts,
 		factByID:        factByID,
 		ranked:          allScored,

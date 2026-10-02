@@ -2,7 +2,10 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // Revise writes newText and retires every fact in victims, pointing each
@@ -21,16 +24,73 @@ import (
 // curve (ADR-007); what changes is that Recall drops them before scoring, and
 // the live fact's receipt names them under Provenance.Supersedes.
 //
-// The revision benchmark calls this method directly. The CLI implements its
-// own daemon-capable revision path because Revise is not part of the RPC surface.
+// The revision benchmark calls this compatible library method directly.
+// Daemon callers use the optional ReviseFactsWithOptions RPC capability.
 func (s *Store) Revise(ctx context.Context, agentID, newText string, victims ...Fact) (string, error) {
+	f, err := s.ReviseFactsWithOptions(ctx, agentID, newText, WriteOptions{}, victims...)
+	return f.ID, err
+}
+
+// ReviseWithOptions revises every live exact-text match captured by this call.
+// The replacement's confidence is explicit or conservatively derived from the
+// validated sources. The replacement never inherits a pin.
+func (s *Store) ReviseWithOptions(ctx context.Context, agentID, target, newText string, options WriteOptions) (Fact, error) {
+	if err := options.Validate(); err != nil {
+		return Fact{}, err
+	}
+	facts, err := s.List(agentID)
+	if err != nil {
+		return Fact{}, err
+	}
+	var victims []Fact
+	for _, f := range facts {
+		if f.Text == target && !f.IsSuperseded() {
+			victims = append(victims, f)
+		}
+	}
+	if len(victims) == 0 {
+		return Fact{}, fmt.Errorf("revise: no live target matches %q", target)
+	}
+	return s.ReviseFactsWithOptions(ctx, agentID, newText, options, victims...)
+}
+
+// ReviseFactsWithOptions preserves exact target IDs for callers that select by
+// ID or substring. Source state is refreshed before embedding and validated
+// again under the replacement write transaction. If a required source changes,
+// no replacement is committed. Retirement failures return the committed fact
+// alongside the error: replacement and retirement remain separate phases.
+func (s *Store) ReviseFactsWithOptions(ctx context.Context, agentID, newText string, options WriteOptions, victims ...Fact) (Fact, error) {
+	if err := options.Validate(); err != nil {
+		return Fact{}, err
+	}
 	if newText == "" {
-		return "", fmt.Errorf("revise: the replacement text is required")
+		return Fact{}, fmt.Errorf("revise: the replacement text is required")
 	}
 	for _, v := range victims {
-		if v.IsSuperseded() {
-			return "", fmt.Errorf("revise: %q is already superseded", v.Text)
+		if v.AgentID != agentID || v.IsSuperseded() {
+			return Fact{}, fmt.Errorf("revise: %q is invalid or already superseded", v.Text)
 		}
+	}
+	sources := make([]Fact, 0, len(victims))
+	seen := make(map[string]bool, len(victims))
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		for _, v := range victims {
+			if seen[v.ID] {
+				continue
+			}
+			seen[v.ID] = true
+			current, err := factInTx(tx, agentID, v.ID)
+			if err != nil {
+				return err
+			}
+			if current.IsSuperseded() || current.Text != v.Text || current.Kind != v.Kind {
+				return fmt.Errorf("%w: source %s", ErrFactChanged, v.ID)
+			}
+			sources = append(sources, current)
+		}
+		return nil
+	}); err != nil {
+		return Fact{}, err
 	}
 
 	// The replacement inherits the victim's kind: a revised alias stays an
@@ -39,22 +99,28 @@ func (s *Store) Revise(ctx context.Context, agentID, newText string, victims ...
 	// "alias:". With mixed victims the first one wins; revising across kinds
 	// has no coherent meaning and callers should not do it.
 	kind := KindFact
-	if len(victims) > 0 {
-		kind = victims[0].Kind
+	if len(sources) > 0 {
+		kind = sources[0].Kind
 	}
-	replacement, err := s.putReturningFactKind(ctx, agentID, newText, kind, "")
+	replacement, err := s.putReturningFactPrepared(ctx, agentID, newText, kind, "", options, func(tx *bolt.Tx, replacement *Fact) error {
+		if err := validateSourcesTx(tx, agentID, sources, false); err != nil {
+			return err
+		}
+		if options.Confidence == nil {
+			replacement.Confidence = derivedConfidence(sources)
+		}
+		return nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("revise: write the replacement: %w", err)
+		return Fact{}, fmt.Errorf("revise: write the replacement: %w", err)
 	}
-	replacementID := replacement.ID
-
-	for _, v := range victims {
-		v.SupersededBy = replacementID
-		if err := s.UpdateFact(agentID, v); err != nil {
-			return replacementID, fmt.Errorf("revise: retire %q: %w", v.Text, err)
+	var errs []error
+	for _, v := range sources {
+		if err := s.retireDerivedFact(agentID, v, replacement.ID, false); err != nil {
+			errs = append(errs, fmt.Errorf("revise: retire %q: %w", v.Text, err))
 		}
 	}
-	return replacementID, nil
+	return replacement, errors.Join(errs...)
 }
 
 // Retire tombstones facts that have nothing to replace them. Recall stops
@@ -62,15 +128,20 @@ func (s *Store) Revise(ctx context.Context, agentID, newText string, victims ...
 // receipt recording that an agent dropped them.
 func (s *Store) Retire(agentID string, victims ...Fact) error {
 	for _, v := range victims {
-		if v.IsSuperseded() {
+		if v.AgentID != agentID || v.IsSuperseded() {
 			return fmt.Errorf("retire: %q is already superseded", v.Text)
 		}
 	}
+	var errs []error
+	seen := make(map[string]bool, len(victims))
 	for _, v := range victims {
-		v.SupersededBy = SupersededByAgent
-		if err := s.UpdateFact(agentID, v); err != nil {
-			return fmt.Errorf("retire %q: %w", v.Text, err)
+		if seen[v.ID] {
+			continue
+		}
+		seen[v.ID] = true
+		if err := s.retireFact(agentID, v, SupersededByAgent, false); err != nil {
+			errs = append(errs, fmt.Errorf("retire %q: %w", v.Text, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

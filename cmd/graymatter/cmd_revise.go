@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/angelnicolasc/graymatter/pkg/memory"
+	"github.com/angelnicolasc/graymatter/pkg/memory/rpc"
 )
 
 // reviseCmd and forgetCmd close the gap that made supersede unreachable from
@@ -30,6 +31,8 @@ import (
 
 func reviseCmd() *cobra.Command {
 	var byID string
+	var confidence string
+	var shared bool
 	cmd := &cobra.Command{
 		Use:     "revise <agent-id> <old-fact> <new-fact>",
 		Aliases: []string{"update", "supersede"},
@@ -47,12 +50,27 @@ onward, so the caller sees one answer instead of three.
 Use --id to target a fact by its identifier when the text is ambiguous.`,
 		Example: `  graymatter revise "backend" "the session timeout is 30 minutes" "the session timeout is 10 minutes"
   graymatter revise --id 01M16NAF5W5Y5SM0PBNYVAZQ37 "backend" "" "the session timeout is 10 minutes"`,
-		Args: cobra.ExactArgs(3),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if shared && len(args) == 2 {
+				return nil
+			}
+			return cobra.ExactArgs(3)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRevise(cmd.Context(), args[0], args[1], args[2], byID)
+			opts, err := cliWriteOptions(cmd, confidence)
+			if err != nil {
+				return err
+			}
+			agentID := args[0]
+			if shared {
+				agentID = memory.SharedAgentID
+			}
+			return runRevise(cmd.Context(), agentID, args[len(args)-2], args[len(args)-1], byID, opts)
 		},
 	}
 	cmd.Flags().StringVar(&byID, "id", "", "target the fact with this ID instead of matching its text")
+	cmd.Flags().StringVar(&confidence, "confidence", "", "replacement confidence; omitted: min(inferred, effective target confidence)")
+	cmd.Flags().BoolVar(&shared, "shared", false, "revise shared memory")
 	return cmd
 }
 
@@ -135,7 +153,14 @@ func findFacts(facts []memory.Fact, wanted, byID string) ([]memory.Fact, error) 
 	}
 }
 
-func runRevise(ctx context.Context, agentID, oldText, newText, byID string) error {
+func runRevise(ctx context.Context, agentID, oldText, newText, byID string, options ...memory.WriteOptions) error {
+	var opts memory.WriteOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	if err := opts.Validate(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(newText) == "" {
 		return fmt.Errorf("the corrected fact is required")
 	}
@@ -168,19 +193,42 @@ func runRevise(ctx context.Context, agentID, oldText, newText, byID string) erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := store.Remember(ctx, agentID, newText); err != nil {
-		return fmt.Errorf("write the corrected fact: %w", err)
-	}
-
-	replacementID := newlyAddedID(store, agentID, before)
-	if replacementID == "" {
-		replacementID = memory.SupersededByAgent
+	var replacementID string
+	var replacementConfidence string
+	_, newRevision := store.(rpc.ConfidenceWriter)
+	if writer, ok := store.(rpc.ConfidenceWriter); ok {
+		f, err := writer.ReviseFactsWithOptions(ctx, agentID, newText, opts, live...)
+		if err != nil {
+			if f.ID != "" {
+				return fmt.Errorf("replacement fact_id %s committed (confidence %s), revision failed: %w", f.ID, memory.EffectiveConfidence(f.Confidence), err)
+			}
+			return fmt.Errorf("write the corrected fact: %w", err)
+		}
+		replacementID, replacementConfidence = f.ID, f.Confidence
+	} else {
+		if opts.Confidence != nil {
+			return memory.ErrConfidenceUnsupported
+		}
+		writer, ok := store.(returningFactStore)
+		if !ok {
+			return fmt.Errorf("backend does not expose identity-preserving revision")
+		}
+		f, err := writer.PutReturningFact(ctx, agentID, newText)
+		if err != nil {
+			return fmt.Errorf("write the corrected fact: %w", err)
+		}
+		if f.ID == "" {
+			return fmt.Errorf("backend returned empty replacement identity")
+		}
+		replacementID = f.ID
 	}
 	retired := make([]string, 0, len(live))
 	for _, v := range live {
 		v.SupersededBy = replacementID
-		if err := store.UpdateFact(agentID, v); err != nil {
-			return fmt.Errorf("supersede the old fact: %w", err)
+		if !newRevision {
+			if err := store.UpdateFact(agentID, v); err != nil {
+				return fmt.Errorf("supersede the old fact: %w", err)
+			}
 		}
 		retired = append(retired, v.ID)
 	}
@@ -192,6 +240,7 @@ func runRevise(ctx context.Context, agentID, oldText, newText, byID string) erro
 			"superseded_by": replacementID,
 			"retired_text":  live[0].Text,
 			"replacement":   newText,
+			"confidence":    replacementConfidence,
 		})
 		fmt.Println(string(data))
 	} else if !quiet {
@@ -230,10 +279,18 @@ func runForget(agentID, text, byID string) error {
 	}
 
 	retired := make([]string, 0, len(live))
+	patcher, patches := store.(rpc.ConfidenceLifecycle)
+	if patches {
+		if err := patcher.Retire(agentID, live...); err != nil {
+			return fmt.Errorf("retire the fact: %w", err)
+		}
+	}
 	for _, v := range live {
 		v.SupersededBy = memory.SupersededByAgent
-		if err := store.UpdateFact(agentID, v); err != nil {
-			return fmt.Errorf("retire the fact: %w", err)
+		if !patches {
+			if err := store.UpdateFact(agentID, v); err != nil {
+				return fmt.Errorf("retire the fact: %w", err)
+			}
 		}
 		retired = append(retired, v.ID)
 	}
@@ -253,24 +310,4 @@ func runForget(agentID, text, byID string) error {
 		fmt.Println()
 	}
 	return nil
-}
-
-// newlyAddedID returns the ID of the fact added since the `before` snapshot.
-// Matching on identity rather than text keeps it correct when the correction
-// repeats wording that is already stored.
-func newlyAddedID(store cliStore, agentID string, before []memory.Fact) string {
-	after, err := store.List(agentID)
-	if err != nil {
-		return ""
-	}
-	known := make(map[string]bool, len(before))
-	for _, f := range before {
-		known[f.ID] = true
-	}
-	for _, f := range after {
-		if !known[f.ID] {
-			return f.ID
-		}
-	}
-	return ""
 }

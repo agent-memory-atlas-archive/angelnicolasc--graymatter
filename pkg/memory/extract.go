@@ -23,6 +23,19 @@ Return ONLY a JSON array of strings. Each string must be a single declarative
 sentence. Omit filler, greetings, and anything not factual.
 Example output: ["Alice prefers bullet points.", "Deadline is Q2 2026."]`
 
+// ExtractionResult records which path supplied the returned facts. A valid LLM
+// extraction may reproduce the input verbatim, so text equality cannot reveal
+// whether the result was generated.
+type ExtractionResult struct {
+	Facts  []string
+	Source string
+}
+
+const (
+	ExtractionLLM      = "llm"
+	ExtractionFallback = "fallback"
+)
+
 // ExtractFacts calls the configured LLM and returns a slice of atomic facts
 // extracted from text. Each element is a self-contained declarative sentence
 // suitable for passing directly to Put / Remember.
@@ -30,16 +43,28 @@ Example output: ["Alice prefers bullet points.", "Deadline is Q2 2026."]`
 // Without an Anthropic API key, ExtractFacts returns the raw text as a single
 // fact (graceful degradation — useful in offline or test contexts).
 func ExtractFacts(ctx context.Context, text string, cfg ExtractConfig) ([]string, error) {
+	result, err := ExtractFactsWithProvenance(ctx, text, cfg)
+	return result.Facts, err
+}
+
+// ExtractFactsWithProvenance preserves ExtractFacts' graceful fallback while
+// exposing its source to callers that persist generated facts conservatively.
+func ExtractFactsWithProvenance(ctx context.Context, text string, cfg ExtractConfig) (ExtractionResult, error) {
 	if text == "" {
-		return nil, nil
+		return ExtractionResult{Source: ExtractionFallback}, nil
 	}
 	if cfg.GetAnthropicAPIKey() == "" {
-		return []string{text}, nil
+		return ExtractionResult{Facts: []string{text}, Source: ExtractionFallback}, nil
 	}
-	return extractViaAnthropic(ctx, text, cfg)
+	return extractViaAnthropicWithProvenance(ctx, text, cfg)
 }
 
 func extractViaAnthropic(ctx context.Context, text string, cfg ExtractConfig) ([]string, error) {
+	result, err := extractViaAnthropicWithProvenance(ctx, text, cfg)
+	return result.Facts, err
+}
+
+func extractViaAnthropicWithProvenance(ctx context.Context, text string, cfg ExtractConfig) (ExtractionResult, error) {
 	client := anthropic.NewClient(option.WithAPIKey(cfg.GetAnthropicAPIKey()))
 	msg, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(cfg.GetConsolidateModel()),
@@ -52,10 +77,10 @@ func extractViaAnthropic(ctx context.Context, text string, cfg ExtractConfig) ([
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("extract facts: %w", err)
+		return ExtractionResult{}, fmt.Errorf("extract facts: %w", err)
 	}
 	if len(msg.Content) == 0 {
-		return nil, fmt.Errorf("extract facts: empty response from model")
+		return ExtractionResult{}, fmt.Errorf("extract facts: empty response from model")
 	}
 	raw := strings.TrimSpace(msg.Content[0].Text)
 	// Strip markdown code fences if the model wraps the JSON.
@@ -67,7 +92,7 @@ func extractViaAnthropic(ctx context.Context, text string, cfg ExtractConfig) ([
 	var facts []string
 	if err := json.Unmarshal([]byte(raw), &facts); err != nil {
 		// Fallback: treat the full response as one fact rather than failing the caller.
-		return []string{text}, nil
+		return ExtractionResult{Facts: []string{text}, Source: ExtractionFallback}, nil
 	}
 
 	// Filter empty strings that models occasionally emit.
@@ -77,5 +102,5 @@ func extractViaAnthropic(ctx context.Context, text string, cfg ExtractConfig) ([
 			out = append(out, f)
 		}
 	}
-	return out, nil
+	return ExtractionResult{Facts: out, Source: ExtractionLLM}, nil
 }

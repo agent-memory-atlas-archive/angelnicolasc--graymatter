@@ -32,13 +32,15 @@ func (o WriteOptions) Validate() error {
 // RecallOptions applies independently to each call, without mutating a store's
 // configuration. An explicit zero weight preserves a requested filter.
 type RecallOptions struct {
-	MinConfidence *string `json:"min_confidence,omitempty"`
+	MinConfidence    *string  `json:"min_confidence,omitempty"`
 	ConfidenceWeight *float64 `json:"confidence_weight,omitempty"`
 }
 
 func (o RecallOptions) Validate() error {
 	if o.MinConfidence != nil {
-		if err := ValidateConfidence(*o.MinConfidence); err != nil { return err }
+		if err := ValidateConfidence(*o.MinConfidence); err != nil {
+			return err
+		}
 	}
 	if o.ConfidenceWeight != nil {
 		w := *o.ConfidenceWeight
@@ -55,14 +57,18 @@ func (o RecallOptions) Requested() bool {
 
 // Weight resolves the product default exactly once at the request boundary.
 func (o RecallOptions) Weight() float64 {
-	if o.ConfidenceWeight != nil { return *o.ConfidenceWeight }
+	if o.ConfidenceWeight != nil {
+		return *o.ConfidenceWeight
+	}
 	return DefaultConfidenceWeight
 }
 
 func ValidateConfidence(value string) error {
 	switch value {
-	case "verified", "inferred", "unverified": return nil
-	default: return fmt.Errorf("confidence must be verified, inferred or unverified")
+	case "verified", "inferred", "unverified":
+		return nil
+	default:
+		return fmt.Errorf("confidence must be verified, inferred or unverified")
 	}
 }
 
@@ -70,54 +76,64 @@ func ValidateConfidence(value string) error {
 // labels conservatively. The original stored label remains in provenance.
 func EffectiveConfidence(raw string) string {
 	switch raw {
-	case "verified": return "verified"
-	case "", "inferred": return "inferred"
-	default: return "unverified"
+	case "verified":
+		return "verified"
+	case "", "inferred":
+		return "inferred"
+	default:
+		return "unverified"
 	}
 }
 
 func ConfidenceLevel(raw string) int {
 	switch EffectiveConfidence(raw) {
-	case "verified": return 2
-	case "inferred": return 1
-	default: return 0
+	case "verified":
+		return 2
+	case "inferred":
+		return 1
+	default:
+		return 0
 	}
 }
 
 // RetrievalMetadata describes the effective policy even for empty results.
 // Legacy calls with no options omit this object entirely.
 type RetrievalMetadata struct {
-	MinConfidence *string `json:"min_confidence,omitempty"`
+	MinConfidence    *string `json:"min_confidence,omitempty"`
 	ConfidenceWeight float64 `json:"confidence_weight"`
-	Policy string `json:"policy"`
-	KG string `json:"kg"`
+	Policy           string  `json:"policy"`
+	KG               string  `json:"kg"`
 }
 
 func (m *RetrievalMetadata) Text() string {
-	if m == nil { return "" }
+	if m == nil {
+		return ""
+	}
 	filter := "none"
-	if m.MinConfidence != nil { filter = *m.MinConfidence }
+	if m.MinConfidence != nil {
+		filter = *m.MinConfidence
+	}
 	return fmt.Sprintf("Retrieval policy %s: min_confidence=%s, confidence_weight=%g; KG=%s.", m.Policy, filter, m.ConfidenceWeight, m.KG)
 }
 
 // ConfidenceRanking retains the base RRF score separately from the score that
 // governs selection. Confidence is a writer's declaration, not a probability.
 type ConfidenceRanking struct {
-	BaseScore float64 `json:"base_score"`
-	FinalScore float64 `json:"final_score"`
-	Factor float64 `json:"factor"`
-	EffectiveConfidence string `json:"effective_confidence"`
-	ConfidenceWeight float64 `json:"confidence_weight"`
-	Policy string `json:"policy"`
+	BaseScore           float64 `json:"base_score"`
+	FinalScore          float64 `json:"final_score"`
+	Factor              float64 `json:"factor"`
+	EffectiveConfidence string  `json:"effective_confidence"`
+	ConfidenceWeight    float64 `json:"confidence_weight"`
+	Policy              string  `json:"policy"`
 }
 
 type RecallResult struct {
-	Facts []string `json:"facts"`
-	Feedback string `json:"feedback,omitempty"`
+	Facts     []string           `json:"facts"`
+	Feedback  string             `json:"feedback,omitempty"`
 	Retrieval *RetrievalMetadata `json:"retrieval,omitempty"`
 }
 
 type RecallExplainResult struct {
-	Receipts []RecallReceipt `json:"receipts"`
+	Receipts  []RecallReceipt    `json:"receipts"`
 	Retrieval *RetrievalMetadata `json:"retrieval,omitempty"`
 }

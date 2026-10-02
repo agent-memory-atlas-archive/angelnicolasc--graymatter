@@ -56,7 +56,7 @@ var (
 
 // indexVersion is bumped whenever the on-disk layout or the tokenisation
 // contract changes. A mismatch rebuilds rather than misreads.
-const indexVersion = 2
+const indexVersion = 3
 
 // postingSep separates a term from a fact ID inside the terms bucket. NUL
 // sorts below every byte a token can contain, so a prefix scan of
@@ -68,8 +68,10 @@ const postingSep = 0x00
 // before it has any text: a superseded fact leaves the corpus entirely, and an
 // alias fact is vocabulary rather than content and never enters the ranking.
 const (
-	idxFlagSuperseded = 1 << 0
-	idxFlagAlias      = 1 << 1
+	idxFlagSuperseded  = 1 << 0
+	idxFlagAlias       = 1 << 1
+	idxConfidenceShift = 2
+	idxConfidenceMask  = 3 << idxConfidenceShift
 )
 
 // indexState is the per-agent stamp that decides whether the index can be
@@ -109,7 +111,9 @@ func postingKey(term, factID string) []byte {
 }
 
 // recencyValue packs everything the ranking needs about a fact that is not
-// its text: the two corpus-membership flags, and the fact's token count.
+// its text: the two corpus-membership flags, two bits of effective confidence,
+// and the fact's token count. Index v3 introduced the confidence bits; older
+// versions must rebuild before decoding them.
 //
 // The length is what turns the keyword signal into pure arithmetic. The
 // scorer divides a fact's tf-idf sum by its length, so with the length here
@@ -139,7 +143,7 @@ func decodeRecencyValue(v []byte) (flags byte, docLen int) {
 }
 
 func indexFlags(f Fact) byte {
-	var b byte
+	b := byte(ConfidenceLevel(f.Confidence)) << idxConfidenceShift
 	if f.IsSuperseded() {
 		b |= idxFlagSuperseded
 	}
@@ -396,13 +400,13 @@ func (s *Store) idxRebuild(agentID string) error {
 // --- query ------------------------------------------------------------------
 
 // idxSpineEntry is one live fact as the ranking sees it before any text is
-// read: identity, age and the two flags that decide whether it is in the
-// corpus at all.
+// read: identity, age, membership flags, effective confidence and token count.
 type idxSpineEntry struct {
-	id      string
-	created time.Time
-	flags   byte
-	docLen  int
+	id         string
+	created    time.Time
+	flags      byte
+	docLen     int
+	confidence byte
 	// tie is the entry's position in the OLDEST-first order, which is exactly
 	// the ranking's tie-break: equal scores go to the older fact, and to the
 	// lower fact ID when the timestamps match too.
@@ -433,10 +437,11 @@ func idxSpineAsc(tx *bolt.Tx, agentID string) []idxSpineEntry {
 		}
 		flags, docLen := decodeRecencyValue(v)
 		out = append(out, idxSpineEntry{
-			id:      string(k[8:]),
-			created: time.Unix(0, int64(binary.BigEndian.Uint64(k[:8]))).UTC(),
-			flags:   flags,
-			docLen:  docLen,
+			id:         string(k[8:]),
+			created:    time.Unix(0, int64(binary.BigEndian.Uint64(k[:8]))).UTC(),
+			flags:      flags,
+			docLen:     docLen,
+			confidence: (flags & idxConfidenceMask) >> idxConfidenceShift,
 		})
 	}
 	return out

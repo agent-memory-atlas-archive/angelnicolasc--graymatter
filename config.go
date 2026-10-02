@@ -33,6 +33,9 @@ const (
 // Config holds all GrayMatter configuration. All fields have sane defaults
 // via DefaultConfig(). Zero-value Config is not valid — always call DefaultConfig().
 type Config struct {
+	// ConfidenceWeight is the product preference default in [0, 0.5]. The
+	// compatible opt-in delivery keeps it zero pending a published rollout.
+	ConfidenceWeight float64
 	// DataDir is the directory where gray.db and vector files are stored.
 	// Default: ".graymatter"
 	DataDir string
@@ -226,6 +229,7 @@ type Config struct {
 // variables and runtime probes. Safe to call multiple times.
 func DefaultConfig() Config {
 	return Config{
+		ConfidenceWeight:        memory.DefaultConfidenceWeight,
 		DataDir:                 ".graymatter",
 		TopK:                    8,
 		EmbeddingMode:           EmbeddingAuto,

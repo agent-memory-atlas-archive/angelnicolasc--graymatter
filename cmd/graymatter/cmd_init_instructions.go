@@ -49,11 +49,9 @@ You have persistent memory through the ~graymatter~ MCP tools. Hooks and MCP are
 complementary; neither replaces the other. MCP wiring alone only makes tools
 available; this briefing and optional Claude Code hooks define when they run.
 
-This block can be installed globally, so it may reach a project that has no
-GrayMatter wired. If ~memory_search~ is not in your toolbelt for this session,
-skip the rest of this section. That is a check on what tools exist, not a
-judgement call about whether memory seems useful: if the tools are there,
-everything below applies.
+This block may reach projects without GrayMatter. If ~memory_search~ is
+not in your toolbelt for this session, skip this section. This is not a
+judgement call about usefulness: when the tools exist, everything below applies.
 
 ### Your identity
 
@@ -108,10 +106,10 @@ guidance.
 
 | Tool | Required | Optional |
 |---|---|---|
-| ~memory_search~ | ~agent_id~, ~query~ | ~top_k~ (default 8), ~explain~ |
-| ~memory_search_batch~ | ~agent_id~, ~queries~ | ~top_k~ (default 8) |
-| ~memory_add~ | ~agent_id~, ~text~ | |
-| ~memory_reflect~ | ~action~, ~agent_id~ (or deprecated ~agent~ alias) | ~text~, ~target~ (required by action) |
+| ~memory_search~ | ~agent_id~, ~query~ | ~top_k~ (default 8), ~explain~, ~min_confidence~, ~confidence_weight~ |
+| ~memory_search_batch~ | ~agent_id~, ~queries~ | ~top_k~ (default 8), ~min_confidence~, ~confidence_weight~ |
+| ~memory_add~ | ~agent_id~, ~text~ | ~confidence~ |
+| ~memory_reflect~ | ~action~, ~agent_id~ (or deprecated ~agent~ alias) | ~text~, ~target~ (required by action), ~confidence~ (add/update only) |
 | ~ALIAS_TOOL~ | ~agent_id~, ~term~, ~equivalents~ | teach the store a vocabulary bridge |
 | ~checkpoint_save~ | ~agent_id~ | ~state~ |
 | ~checkpoint_resume~ | ~agent_id~ | ~on_missing~: ~"error"~ (default) or ~"empty"~ when no checkpoint is ordinary control flow |
@@ -119,14 +117,18 @@ guidance.
 ~agent_id~ is canonical for every tool. ~memory_reflect~ also accepts the
 deprecated ~agent~ alias; ~agent_id~ wins when both are set.
 
+Confidence declares ~verified~/~inferred~/~unverified~; GrayMatter does not verify it.
+Omitted add is inferred; update takes the weakest target, capped at inferred.
+~min_confidence~ filters before ranking and suppresses graph hints.
+~confidence_weight~ accepts [0,0.5], defaults to 0, and zero keeps filters.
+~explain~ reports final scores. Unsupported options require a daemon update/restart;
+never replay uncertain writes.
+
 ### The store learns its own vocabulary
 
-When a search misses because your wording and the store's differ, the store
-learns that bridge from use: declare it once with ~ALIAS_TOOL~, or let two
-sessions repeat the same unknown word and the store promotes the alias by
-itself. ~graymatter alias list~ shows which aliases you taught (~authored~)
-and which the store concluded from use (~usage~). A wrong one is revised like
-any fact.
+Teach vocabulary bridges with ~ALIAS_TOOL~. Optional usage learning can also
+promote repeated reformulations. ~graymatter alias list~ distinguishes ~authored~
+and ~usage~ aliases; revise incorrect mappings.
 
 ### Store conclusions, not transcripts
 

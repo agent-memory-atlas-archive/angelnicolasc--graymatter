@@ -29,16 +29,32 @@ func (s *Server) handleMemorySearch(ctx context.Context, req mcp.CallToolRequest
 	}
 	topK := getInt(args, "top_k", 0) // 0 = store default
 	explain := getBool(args, "explain")
+	opts, err := recallOptions(args)
+	if err != nil {
+		return toolError(err.Error())
+	}
 
 	if explain {
-		return s.handleMemorySearchExplain(ctx, agentID, query, topK)
+		return s.handleMemorySearchExplain(ctx, agentID, query, topK, opts)
 	}
 
 	// RecallDetailed over Recall: same facts, same order — the second return
 	// is the additive weak-match vocabulary block (empty when the match is
 	// strong), which is what lets the agent reformulate once, informed,
 	// instead of guessing N times.
-	facts, feedback, err := s.backend.RecallDetailed(ctx, agentID, query, topK)
+	var facts []string
+	var feedback string
+	var retrieval *memory.RetrievalMetadata
+	if useConfidenceRecall(s.backend, opts) {
+		backend, ok := s.backend.(confidenceRecaller)
+		if !ok {
+			return toolError(memory.ErrConfidenceUnsupported.Error())
+		}
+		result, callErr := backend.RecallWithOptions(ctx, agentID, query, topK, opts)
+		facts, feedback, retrieval, err = result.Facts, result.Feedback, result.Retrieval, callErr
+	} else {
+		facts, feedback, err = s.backend.RecallDetailed(ctx, agentID, query, topK)
+	}
 	if err != nil {
 		return toolError(fmt.Sprintf("recall error: %v", err))
 	}
@@ -52,7 +68,10 @@ func (s *Server) handleMemorySearch(ctx context.Context, req mcp.CallToolRequest
 		if feedback != "" {
 			notice += "\n\n" + feedback
 		}
-		return toolStructured(searchResult{AgentID: agentID, Query: query, Count: 0, Facts: []string{}, Feedback: feedback}, notice)
+		if retrieval != nil {
+			notice += "\n\n" + retrieval.Text()
+		}
+		return toolStructured(searchResult{AgentID: agentID, Query: query, Count: 0, Facts: []string{}, Feedback: feedback, Retrieval: retrieval}, notice)
 	}
 
 	var sb strings.Builder
@@ -63,7 +82,10 @@ func (s *Server) handleMemorySearch(ctx context.Context, req mcp.CallToolRequest
 	if feedback != "" {
 		sb.WriteString("\n" + feedback + "\n")
 	}
-	return toolStructured(searchResult{AgentID: agentID, Query: query, Count: len(facts), Facts: facts, Feedback: feedback}, sb.String())
+	if retrieval != nil {
+		sb.WriteString("\n" + retrieval.Text() + "\n")
+	}
+	return toolStructured(searchResult{AgentID: agentID, Query: query, Count: len(facts), Facts: facts, Feedback: feedback, Retrieval: retrieval}, sb.String())
 }
 
 // handleMemoryAlias is the memory_alias entry point: it teaches the store's
@@ -95,15 +117,34 @@ func (s *Server) handleMemoryAlias(ctx context.Context, req mcp.CallToolRequest)
 // text contract is untouched; this branch has its own prose shape, and the
 // structured payload rides the same searchResult type under the optional
 // `explained` key so the declared output schema covers both.
-func (s *Server) handleMemorySearchExplain(ctx context.Context, agentID, query string, topK int) (*mcp.CallToolResult, error) {
-	receipts, err := s.backend.RecallExplain(ctx, agentID, query, topK)
+func (s *Server) handleMemorySearchExplain(ctx context.Context, agentID, query string, topK int, options ...memory.RecallOptions) (*mcp.CallToolResult, error) {
+	var opts memory.RecallOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	var receipts []memory.RecallReceipt
+	var retrieval *memory.RetrievalMetadata
+	var err error
+	if useConfidenceRecall(s.backend, opts) {
+		backend, ok := s.backend.(confidenceRecaller)
+		if !ok {
+			return toolError(memory.ErrConfidenceUnsupported.Error())
+		}
+		result, callErr := backend.RecallExplainWithOptions(ctx, agentID, query, topK, opts)
+		receipts, retrieval, err = result.Receipts, result.Retrieval, callErr
+	} else {
+		receipts, err = s.backend.RecallExplain(ctx, agentID, query, topK)
+	}
 	if err != nil {
 		return toolError(fmt.Sprintf("recall error: %v", err))
 	}
 
 	if len(receipts) == 0 {
 		notice := fmt.Sprintf("No memories found for agent %q matching %q.", agentID, query)
-		return toolStructured(searchResult{AgentID: agentID, Query: query, Count: 0, Facts: []string{}}, notice)
+		if retrieval != nil {
+			notice += "\n\n" + retrieval.Text()
+		}
+		return toolStructured(searchResult{AgentID: agentID, Query: query, Count: 0, Facts: []string{}, Retrieval: retrieval}, notice)
 	}
 
 	var sb strings.Builder
@@ -114,6 +155,9 @@ func (s *Server) handleMemorySearchExplain(ctx context.Context, agentID, query s
 			r.Ranks.FusedScore, r.Ranks.VectorRank, r.Ranks.KeywordRank, r.Ranks.RecencyRank, r.Ranks.K,
 			r.Weight, r.AgeDays, r.Provenance.WrittenAt.Format("2006-01-02")))
 		sb.WriteString(fmt.Sprintf("   fact_id %s\n", r.Provenance.FactID))
+		if r.Ranking != nil {
+			sb.WriteString(fmt.Sprintf("   final score %.8f = base %.8f * factor %g; effective confidence %s, weight %g, policy %s\n", r.Ranking.FinalScore, r.Ranking.BaseScore, r.Ranking.Factor, r.Ranking.EffectiveConfidence, r.Ranking.ConfidenceWeight, r.Ranking.Policy))
+		}
 		// The structured payload carries this under `explained`, but the agent
 		// reads the prose. A value that replaced an earlier one is different
 		// information from a value nobody ever questioned, and leaving it out
@@ -127,6 +171,9 @@ func (s *Server) handleMemorySearchExplain(ctx context.Context, agentID, query s
 				strings.Join(r.Provenance.Supersedes, ", ")))
 		}
 	}
+	if retrieval != nil {
+		sb.WriteString("\n" + retrieval.Text() + "\n")
+	}
 	return toolStructured(searchResult{
 		AgentID: agentID,
 		Query:   query,
@@ -136,6 +183,7 @@ func (s *Server) handleMemorySearchExplain(ctx context.Context, agentID, query s
 		// conforms to the declared output schema (null would not).
 		Facts:     []string{},
 		Explained: receipts,
+		Retrieval: retrieval,
 	}, sb.String())
 }
 
@@ -150,11 +198,27 @@ func (s *Server) handleMemoryAdd(ctx context.Context, req mcp.CallToolRequest) (
 		return toolError("text is required")
 	}
 
-	if err := s.backend.Remember(ctx, agentID, text); err != nil {
+	opts, err := writeOptions(args)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	out := addResult{AgentID: agentID, Stored: true}
+	notice := fmt.Sprintf("Memory stored for agent %q.", agentID)
+	if opts.Confidence != nil {
+		writer, ok := s.backend.(confidenceWriter)
+		if !ok {
+			return toolError(memory.ErrConfidenceUnsupported.Error())
+		}
+		f, err := writer.PutWithOptionsReturningFact(ctx, agentID, text, opts)
+		if err != nil {
+			return committedWriteError("remember", f, err)
+		}
+		out.FactID, out.Confidence = f.ID, f.Confidence
+		notice += fmt.Sprintf(" Confidence %s; fact_id %s.", f.Confidence, f.ID)
+	} else if err := s.backend.Remember(ctx, agentID, text); err != nil {
 		return toolError(fmt.Sprintf("remember error: %v", err))
 	}
-
-	return toolStructured(addResult{AgentID: agentID, Stored: true}, fmt.Sprintf("Memory stored for agent %q.", agentID))
+	return toolStructured(out, notice)
 }
 
 func (s *Server) handleCheckpointSave(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -260,16 +324,34 @@ func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolReques
 	// either one, so neither can be globally required (see PR #10).
 	text, _ := getString(args, "text")
 	target, _ := getString(args, "target")
+	opts, err := writeOptions(args)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	if opts.Confidence != nil && action != "add" && action != "update" {
+		return toolError("confidence is supported only by reflect add/update")
+	}
 
 	var oldText string
 	var resultMsg string
+	out := reflectResult{Action: action, Agent: agentID, OK: true}
 
 	switch action {
 	case "add":
 		if text == "" {
 			return toolError("text (the fact to add) is required for add")
 		}
-		if err := s.backend.Remember(ctx, agentID, text); err != nil {
+		if opts.Confidence != nil {
+			writer, ok := s.backend.(confidenceWriter)
+			if !ok {
+				return toolError(memory.ErrConfidenceUnsupported.Error())
+			}
+			f, err := writer.PutWithOptionsReturningFact(ctx, agentID, text, opts)
+			if err != nil {
+				return committedWriteError("add", f, err)
+			}
+			out.FactID, out.Confidence = f.ID, f.Confidence
+		} else if err := s.backend.Remember(ctx, agentID, text); err != nil {
 			return toolError(fmt.Sprintf("add failed: %v", err))
 		}
 		resultMsg = fmt.Sprintf("Added fact for agent %q.", agentID)
@@ -290,6 +372,18 @@ func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolReques
 			return toolError(fmt.Sprintf("target fact not found: %q", target))
 		}
 		oldText = target
+		if reviser, ok := s.backend.(confidenceReviser); ok {
+			replacement, err := reviser.ReviseFactsWithOptions(ctx, agentID, text, opts, victims...)
+			if err != nil {
+				return committedWriteError("update", replacement, err)
+			}
+			out.FactID, out.Confidence = replacement.ID, replacement.Confidence
+			resultMsg = fmt.Sprintf("Updated fact for agent %q.", agentID)
+			break
+		}
+		if opts.Confidence != nil {
+			return toolError(memory.ErrConfidenceUnsupported.Error())
+		}
 
 		// Write the correction before retiring what it corrects. The previous
 		// order zeroed the old fact's weight first, so a failing Remember left
@@ -336,6 +430,15 @@ func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolReques
 			return toolError(fmt.Sprintf("target fact not found: %q", wanted))
 		}
 		oldText = wanted
+		if retirer, ok := s.backend.(interface {
+			Retire(string, ...memory.Fact) error
+		}); ok {
+			if err := retirer.Retire(agentID, victims...); err != nil {
+				return toolError(fmt.Sprintf("suppress fact: %v", err))
+			}
+			resultMsg = fmt.Sprintf("Fact suppressed for agent %q.", agentID)
+			break
+		}
 
 		// Nothing replaces this one, so the tombstone records that an agent
 		// decided to drop it.
@@ -379,6 +482,15 @@ func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolReques
 		if len(victims) == 0 {
 			return toolError(fmt.Sprintf("target fact not found: %q", wanted))
 		}
+		if patcher, ok := s.backend.(interface {
+			SetPinned(string, bool, ...memory.Fact) error
+		}); ok {
+			if err := patcher.SetPinned(agentID, action == "pin", victims...); err != nil {
+				return toolError(fmt.Sprintf("%s failed: %v", action, err))
+			}
+			resultMsg = fmt.Sprintf("Fact %s for agent %q. Pinned facts are exempt from decay, pruning and summarisation.", action, agentID)
+			break
+		}
 		for _, victim := range victims {
 			victim.Pinned = action == "pin"
 			if victim.Pinned {
@@ -405,7 +517,10 @@ func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolReques
 		Source:    "agent_self",
 	})
 
-	return toolStructured(reflectResult{Action: action, Agent: agentID, OK: true}, resultMsg)
+	if out.FactID != "" {
+		resultMsg += fmt.Sprintf(" Confidence %s; fact_id %s.", memory.EffectiveConfidence(out.Confidence), out.FactID)
+	}
+	return toolStructured(out, resultMsg)
 }
 
 // findByText selects every exact match from one List snapshot: acting on just
@@ -447,11 +562,27 @@ func (s *Server) supersedeFact(agentID string, f memory.Fact, supersededBy strin
 // should get the five answers that worked rather than one error for all of
 // them; a batch only fails outright if the whole store is unreachable, which
 // each individual call would report anyway.
-func (s *Server) handleMemorySearchBatch(ctx context.Context, agentID string, queries []string, topK int) (*mcp.CallToolResult, error) {
+func (s *Server) handleMemorySearchBatch(ctx context.Context, agentID string, queries []string, topK int, options ...memory.RecallOptions) (*mcp.CallToolResult, error) {
+	var opts memory.RecallOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	if err := opts.Validate(); err != nil {
+		return toolError(err.Error())
+	}
+	backend, supports := s.backend.(confidenceRecaller)
+	opts, useOptions, err := batchRecallOptions(s.backend, opts)
+	if err != nil {
+		return toolError(fmt.Sprintf("recall error: %v", err))
+	}
+	if useOptions && !supports {
+		return toolError(memory.ErrConfidenceUnsupported.Error())
+	}
 	type row struct {
-		query string
-		facts []string
-		err   error
+		query     string
+		facts     []string
+		err       error
+		retrieval *memory.RetrievalMetadata
 	}
 	rows := make([]row, len(queries))
 
@@ -468,7 +599,14 @@ func (s *Server) handleMemorySearchBatch(ctx context.Context, agentID string, qu
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			rows[i].query = q
-			facts, err := s.backend.Recall(ctx, agentID, q, topK)
+			var facts []string
+			var err error
+			if useOptions {
+				result, callErr := backend.RecallWithOptions(ctx, agentID, q, topK, opts)
+				facts, rows[i].retrieval, err = result.Facts, result.Retrieval, callErr
+			} else {
+				facts, err = s.backend.Recall(ctx, agentID, q, topK)
+			}
 			if err != nil {
 				rows[i].err = err
 				return
@@ -488,6 +626,12 @@ func (s *Server) handleMemorySearchBatch(ctx context.Context, agentID string, qu
 	merged := memory.MergedFacts(batch)
 
 	out := batchResult{AgentID: agentID, Count: len(merged), Merged: merged}
+	for _, r := range rows {
+		if r.retrieval != nil {
+			out.Retrieval = r.retrieval
+			break
+		}
+	}
 	for _, r := range rows {
 		e := ""
 		if r.err != nil {
@@ -512,10 +656,20 @@ func (s *Server) handleMemorySearchBatch(ctx context.Context, agentID string, qu
 		}
 	}
 	if len(failed) > 0 {
+		if len(failed) == len(queries) {
+			return toolError("All recall queries failed: " + strings.Join(failed, "; "))
+		}
 		fmt.Fprintf(&sb, "\n%d of %d queries failed:\n  %s\n", len(failed), len(queries), strings.Join(failed, "\n  "))
 	}
 	if len(merged) == 0 && len(failed) == 0 {
-		return toolStructured(out, fmt.Sprintf("No memories found for agent %q matching any of the %d queries.", agentID, len(queries)))
+		notice := fmt.Sprintf("No memories found for agent %q matching any of the %d queries.", agentID, len(queries))
+		if out.Retrieval != nil {
+			notice += "\n\n" + out.Retrieval.Text()
+		}
+		return toolStructured(out, notice)
+	}
+	if out.Retrieval != nil {
+		sb.WriteString("\n" + out.Retrieval.Text() + "\n")
 	}
 	return toolStructured(out, sb.String())
 }
@@ -532,5 +686,9 @@ func (s *Server) handleMemorySearchBatchTool(ctx context.Context, req mcp.CallTo
 	if len(queries) == 0 {
 		return toolError("queries is required and must hold at least one non-empty query")
 	}
-	return s.handleMemorySearchBatch(ctx, agentID, queries, getInt(args, "top_k", 0))
+	opts, err := recallOptions(args)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return s.handleMemorySearchBatch(ctx, agentID, queries, getInt(args, "top_k", 0), opts)
 }

@@ -555,7 +555,7 @@ func mustRead(t *testing.T, path string) []byte {
 // recurring copy GrayMatter ships: unlike the MCP handshake, which rides one
 // initialize per session, this text lives in CLAUDE.md / AGENTS.md and is read
 // on every turn of every session of every project it was installed into. The
-// handshake carries a 240-token ceiling for a 210-token string
+// handshake carries a separate 240-token ceiling for its compact instructions
 // (cmd/graymatter/internal/mcp/instructions.go); this is the same discipline at
 // the same ~14% headroom, applied where the cost is roughly four times larger.
 // Raise it in this constant, with reasoning, rather than letting the copy grow

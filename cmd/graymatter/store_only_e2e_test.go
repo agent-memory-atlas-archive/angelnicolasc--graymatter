@@ -302,6 +302,7 @@ type issue81MCP struct {
 	stderr  issue81LockedBuffer
 	cancel  context.CancelFunc
 	closed  sync.Once
+	trace   func(int, string, any, []byte)
 }
 
 type issue81LockedBuffer struct {
@@ -322,6 +323,10 @@ func (b *issue81LockedBuffer) String() string {
 }
 
 func (f *issue81Fixture) startMCP(dir, command string, args []string, extra map[string]string) *issue81MCP {
+	return f.startMCPWithTrace(dir, command, args, extra, nil)
+}
+
+func (f *issue81Fixture) startMCPWithTrace(dir, command string, args []string, extra map[string]string, trace func(int, string, any, []byte)) *issue81MCP {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	cmd := exec.CommandContext(ctx, command, args...)
@@ -336,7 +341,7 @@ func (f *issue81Fixture) startMCP(dir, command string, args []string, extra map[
 		cancel()
 		f.t.Fatal(err)
 	}
-	m := &issue81MCP{t: f.t, cmd: cmd, stdin: stdin, lines: make(chan []byte, 16), readErr: make(chan error, 1), cancel: cancel}
+	m := &issue81MCP{t: f.t, cmd: cmd, stdin: stdin, lines: make(chan []byte, 16), readErr: make(chan error, 1), cancel: cancel, trace: trace}
 	cmd.Stderr = &m.stderr
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -439,6 +444,9 @@ func (m *issue81MCP) request(id int, method string, params any) []byte {
 			}
 			if bytes.Contains(envelope.Result, []byte(`"isError":true`)) {
 				m.t.Fatalf("MCP tool failed for %s: %s", method, line)
+			}
+			if m.trace != nil {
+				m.trace(id, method, params, line)
 			}
 			return envelope.Result
 		case err := <-m.readErr:

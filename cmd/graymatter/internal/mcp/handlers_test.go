@@ -683,7 +683,8 @@ func TestMemoryReflect_AllExactMatches(t *testing.T) {
 }
 
 type reflectWriteFailureBackend struct {
-	*DirectBackend
+	Backend
+	direct          *DirectBackend
 	updates         int
 	failReplacement bool
 }
@@ -693,14 +694,14 @@ func (b *reflectWriteFailureBackend) UpdateFact(agentID string, f memory.Fact) e
 	if b.updates == 2 {
 		return errors.New("injected write failure")
 	}
-	return b.DirectBackend.UpdateFact(agentID, f)
+	return b.direct.UpdateFact(agentID, f)
 }
 
 func (b *reflectWriteFailureBackend) PutReturningFact(ctx context.Context, agentID, text string) (memory.Fact, error) {
 	if b.failReplacement {
 		return memory.Fact{}, errors.New("injected replacement failure")
 	}
-	return b.DirectBackend.PutReturningFact(ctx, agentID, text)
+	return b.direct.PutReturningFact(ctx, agentID, text)
 }
 
 func TestMemoryReflect_DuplicateWriteFailure(t *testing.T) {
@@ -709,7 +710,7 @@ func TestMemoryReflect_DuplicateWriteFailure(t *testing.T) {
 			s, _ := newTestServer(t)
 			mustAdd(t, s, "a1", staleFact)
 			mustAdd(t, s, "a1", staleFact)
-			backend := &reflectWriteFailureBackend{DirectBackend: s.backend.(*DirectBackend), failReplacement: action == "replacement_failure"}
+			backend := &reflectWriteFailureBackend{Backend: s.backend, direct: s.backend.(*DirectBackend), failReplacement: action == "replacement_failure"}
 			s.backend = backend
 			if backend.failReplacement {
 				action = "update"
