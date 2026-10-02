@@ -104,6 +104,10 @@ scripts/kg-timelapse.sh    # deterministic corpus -> frames -> GIF
 
 You can't improve what you can't see.
 
+<p align="center">
+  <img src=".github/assets/tui-workbench.gif" alt="GrayMatter TUI: creating and pinning a memory, activity, usage and system status" width="900px" style="max-width: 100%;">
+</p>
+
 `graymatter tui` opens a memory workbench with six views:
 
 | View | Purpose |
