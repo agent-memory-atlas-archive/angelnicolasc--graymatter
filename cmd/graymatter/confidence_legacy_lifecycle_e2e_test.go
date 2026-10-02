@@ -12,8 +12,10 @@ import (
 )
 
 func TestConfidenceLegacyLifecycleRealBinaryAndMCP(t *testing.T) {
-	f := newIssue81Fixture(t)
+	// Build before the fixture isolates HOME; Go's read-only module cache must
+	// stay outside t.TempDir so Unix cleanup can remove the fixture.
 	previous := confidencePreviousBinary(t)
+	f := newIssue81Fixture(t)
 	dir := t.TempDir()
 	oldProcess := confidenceStartDaemon(t, previous, dir)
 	initial, err := daemon.ConnectNoSpawn(dir)
