@@ -533,6 +533,58 @@ func TestConfidenceRecallAllTouchesOnlyFinalCanonicalResults(t *testing.T) {
 	}
 }
 
+func TestConfidenceLegacyAllTouchesOnlyFinalCanonicalResults(t *testing.T) {
+	for _, indexed := range []bool{false, true} {
+		for _, duplicate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("indexed=%t/duplicate=%t", indexed, duplicate), func(t *testing.T) {
+				s := confidenceRecallStore(t, indexed)
+				selected := confidenceRecallSeed(t, s, "legacy-all-access", "routing selected", "", 0)
+				sharedText := "routing discarded shared"
+				if duplicate {
+					sharedText = selected.Text
+				}
+				shared := confidenceRecallSeed(t, s, SharedAgentID, sharedText, "", 0)
+				result, err := s.RecallAll(context.Background(), "legacy-all-access", "routing", 1)
+				if err != nil || !reflect.DeepEqual(result, []string{selected.Text}) {
+					t.Fatalf("legacy merge selection changed: %v / %v", result, err)
+				}
+				for _, topK := range []int{0, -1} {
+					result, err = s.RecallAll(context.Background(), "legacy-all-access", "routing", topK)
+					if err != nil || len(result) != 0 {
+						t.Fatalf("legacy nonpositive topK changed: %v / %v", result, err)
+					}
+				}
+				for _, expected := range []struct {
+					fact   Fact
+					access int
+				}{{selected, 1}, {shared, 0}} {
+					facts, err := s.List(expected.fact.AgentID)
+					if err != nil || len(facts) != 1 || facts[0].ID != expected.fact.ID || facts[0].AccessCount != expected.access {
+						t.Fatalf("legacy merge touched discarded/duplicate identity: %+v / %v; want id=%s access=%d", facts, err, expected.fact.ID, expected.access)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConfidenceLegacyAllRetainsConfiguredDefault(t *testing.T) {
+	s := confidenceRecallStore(t, true)
+	s.cfg.ConfidenceWeight = .2
+	s.cfg.SignalWeights = &SignalWeights{Recency: 1}
+	verified := confidenceRecallSeed(t, s, "legacy-all-default", "verified policy", "verified", 0)
+	unchecked := confidenceRecallSeed(t, s, "legacy-all-default", "unverified policy", "unverified", 1)
+	result, err := s.RecallAll(context.Background(), "legacy-all-default", "policy", 1)
+	if err != nil || !reflect.DeepEqual(result, []string{verified.Text}) {
+		t.Fatalf("legacy all lost configured default: %v / %v", result, err)
+	}
+	zero := 0.0
+	explicit, err := s.RecallAllWithOptions(context.Background(), "legacy-all-default", "policy", 1, RecallOptions{ConfidenceWeight: &zero})
+	if err != nil || !reflect.DeepEqual(explicit.Facts, []string{unchecked.Text}) || explicit.Retrieval.ConfidenceWeight != 0 {
+		t.Fatalf("explicit zero did not override configured all default: %+v / %v", explicit, err)
+	}
+}
+
 func TestConfidenceIndexUpgradeAndReadOnlyFallback(t *testing.T) {
 	s := confidenceRecallStore(t, true)
 	confidenceRecallSeed(t, s, "upgrade", "verified archive", "verified", 0)

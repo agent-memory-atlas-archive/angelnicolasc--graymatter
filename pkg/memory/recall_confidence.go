@@ -137,7 +137,12 @@ func (s *Store) RecallAllWithOptions(ctx context.Context, agentID, query string,
 	if err != nil {
 		return RecallResult{}, err
 	}
-	topK = recallTopK(topK)
+	return s.recallAllWithPolicy(ctx, agentID, query, recallTopK(topK), p)
+}
+
+// Both public All methods share collection and bookkeeping. The older method
+// supplies its original raw topK semantics; option-aware calls normalize it.
+func (s *Store) recallAllWithPolicy(ctx context.Context, agentID, query string, topK int, p recallPolicy) (RecallResult, error) {
 	agent, af, agentSelected, err := s.recallDetailedCollectWithPolicy(ctx, agentID, query, topK, p, false)
 	if err != nil {
 		return RecallResult{}, fmt.Errorf("recall agent: %w", err)

@@ -117,7 +117,7 @@ as `"hints_without_confidence_receipts"`. Explain never adds that hint tail.
 
 ### Confidence options (Unreleased)
 
-These APIs and MCP/CLI options are implemented on main and are not available in
+These APIs and MCP/CLI options are implemented in this change and unavailable in
 v0.19.1. Labels are writer declarations, not probabilities or verification by
 GrayMatter. New writes accept exactly `verified`, `inferred` or `unverified`.
 Absent/empty historical labels are effectively inferred; unknown historical

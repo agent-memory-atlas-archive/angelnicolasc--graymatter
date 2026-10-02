@@ -975,15 +975,15 @@ func (s *Store) RecallShared(ctx context.Context, query string, topK int) ([]str
 // this, results were concatenated agent-first and truncated, which starved
 // the shared namespace whenever the agent list filled its topK.
 func (s *Store) RecallAll(ctx context.Context, agentID, query string, topK int) ([]string, error) {
-	agentResults, err := s.Recall(ctx, agentID, query, topK)
+	policy, err := s.resolveRecallPolicy(RecallOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("recall agent: %w", err)
+		return nil, err
 	}
-	sharedResults, err := s.Recall(ctx, SharedAgentID, query, topK)
-	if err != nil {
-		return nil, fmt.Errorf("recall shared: %w", err)
+	if topK < 0 {
+		topK = 0
 	}
-	return fuseRecallResults(agentResults, sharedResults, topK), nil
+	result, err := s.recallAllWithPolicy(ctx, agentID, query, topK, policy)
+	return result.Facts, err
 }
 
 // fuseRecallResults merges two recall rankings with Reciprocal Rank Fusion

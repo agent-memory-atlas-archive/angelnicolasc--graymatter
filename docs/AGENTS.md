@@ -34,7 +34,7 @@ Seven tools are registered by `graymatter mcp serve` (see [`cmd/graymatter/inter
 
 ### Confidence options (Unreleased)
 
-The options below are implemented on main and are absent from v0.19.1. Their
+The options below are implemented in this change and absent from v0.19.1. Their
 first delivery keeps preference disabled by default. A positive product default
 requires notice in a published minor release, followed by a later minor release
 and successful frozen quality gates. An Unreleased entry is not that notice.

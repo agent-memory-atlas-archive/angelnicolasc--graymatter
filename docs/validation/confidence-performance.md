@@ -59,8 +59,9 @@ vector expansion, concurrent writers, all supported operating systems or Go
 versions. Existing performance budgets remain unchanged.
 
 The existing `TestP4ScaleGate` remains a separate acceptance check: indexed
-Recall p99 at 30k must be at most 40ms and indexed Put p50 at most 3ms. Benchmark
-sample means above cannot establish either percentile gate. Run the unchanged
+Recall p99 at 30k must be at most 40ms, indexed Recall p99 at 600 at most 15ms,
+and indexed Put p50 at most 3ms. Benchmark
+sample means above cannot establish these percentile gates. Run the unchanged
 gate separately on a quiet host after correctness tests:
 
 ```powershell

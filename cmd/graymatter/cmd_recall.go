@@ -248,6 +248,12 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 	if len(rows) > 0 && len(failures) == len(rows) {
 		batchError = fmt.Errorf("all recall queries failed: %s", strings.Join(failures, "; "))
 	}
+	scope := agentID
+	if settings.all {
+		scope = "all"
+	} else if settings.shared {
+		scope = "shared"
+	}
 
 	if jsonOut {
 		out := map[string]any{
@@ -256,6 +262,9 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 			"count":     len(merged),
 			"merged":    merged,
 			"per_query": rows,
+		}
+		if settings.all || settings.shared {
+			out["scope"] = scope
 		}
 		if retrieval != nil {
 			out["retrieval"] = retrieval
@@ -267,7 +276,14 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 
 	if len(merged) == 0 {
 		if !quiet && len(failures) == 0 {
-			fmt.Printf("No memories found for agent %q matching any of the %d queries.\n", agentID, len(queries))
+			switch {
+			case settings.shared:
+				fmt.Printf("No memories found in shared memory matching any of the %d queries.\n", len(queries))
+			case settings.all:
+				fmt.Printf("No memories found for agent %q or shared memory matching any of the %d queries.\n", agentID, len(queries))
+			default:
+				fmt.Printf("No memories found for agent %q matching any of the %d queries.\n", agentID, len(queries))
+			}
 		}
 		if retrieval != nil {
 			fmt.Println(retrieval.Text())
@@ -288,7 +304,7 @@ func runRecallBatch(cmd *cobra.Command, agentID string, queries []string, topK i
 	// the thing the caller cannot reconstruct, so it is what the default
 	// rendering preserves.
 	if !quiet {
-		fmt.Printf("# Memory context [%s] / %d queries, %d distinct facts\n", agentID, len(queries), len(merged))
+		fmt.Printf("# Memory context [%s] / %d queries, %d distinct facts\n", scope, len(queries), len(merged))
 	}
 	for _, r := range rows {
 		fmt.Printf("\n## %s\n", r.Query)

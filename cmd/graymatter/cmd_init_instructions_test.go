@@ -32,10 +32,10 @@ func TestUpsertInstructions_CreatesFile(t *testing.T) {
 	}
 	for _, want := range []string{
 		instrBeginMarker, instrEndMarker, "weak-match", "hook recall ran",
-		"| `memory_search` | `agent_id`, `query` | `top_k` (default 8), `explain` |",
-		"| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default 8) |",
-		"| `memory_add` | `agent_id`, `text` | |",
-		"| `memory_reflect` | `action`, `agent_id` (or deprecated `agent` alias) | `text`, `target` (required by action) |",
+		"| `memory_search` | `agent_id`, `query` | `top_k` (default 8), `explain`, `min_confidence`, `confidence_weight` |",
+		"| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default 8), `min_confidence`, `confidence_weight` |",
+		"| `memory_add` | `agent_id`, `text` | `confidence` |",
+		"| `memory_reflect` | `action`, `agent_id` (or deprecated `agent` alias) | `text`, `target` (required by action), `confidence` (add/update only) |",
 		"| `memory_alias` | `agent_id`, `term`, `equivalents` | teach the store a vocabulary bridge |",
 		"| `checkpoint_save` | `agent_id` | `state` |",
 		"| `checkpoint_resume` | `agent_id` | `on_missing`: `\"error\"` (default) or `\"empty\"` when no checkpoint is ordinary control flow |",

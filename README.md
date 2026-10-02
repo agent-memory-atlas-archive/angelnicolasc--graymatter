@@ -452,7 +452,7 @@ graymatter context-sync              # managed context block (opt-in)
 
 ### Confidence options (Unreleased)
 
-Implemented on main; these options are unavailable in v0.19.1. A label is the
+Implemented in this change; these options are unavailable in v0.19.1. A label is the
 writer's declaration, not verification performed by GrayMatter:
 `unverified < inferred < verified`. New writes validate exact labels and commit
 the label with the fact's text and ID. Omitted add labels remain legacy inferred.
