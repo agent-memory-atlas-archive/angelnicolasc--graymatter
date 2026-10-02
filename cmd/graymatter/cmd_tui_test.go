@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
-// keyMsg builds a tea.KeyMsg for a single printable character.
-func keyMsg(ch rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}}
+// keyMsg builds a tea.KeyPressMsg for a single printable character.
+func keyMsg(ch rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: ch, Text: string(ch)}
 }
 
 // TestTUI_DeleteDisabledInReadOnly verifies that pressing 'd' in read-only
@@ -49,7 +49,7 @@ func TestTUI_DeleteAllowedInWriteMode(t *testing.T) {
 func TestTUI_KillDisabledInReadOnly(t *testing.T) {
 	m := tuiModel{readOnly: true}
 
-	_ = m.updateSessionsKey(keyMsg('k'))
+	_ = m.updateSessionsKey(keyMsg('x'))
 
 	if !strings.Contains(m.status, "read-only") {
 		t.Errorf("expected status to mention read-only, got %q", m.status)
@@ -61,7 +61,7 @@ func TestTUI_KillDisabledInReadOnly(t *testing.T) {
 func TestTUI_KillAllowedInWriteMode(t *testing.T) {
 	m := tuiModel{readOnly: false}
 
-	_ = m.updateSessionsKey(keyMsg('k'))
+	_ = m.updateSessionsKey(keyMsg('x'))
 
 	if strings.Contains(m.status, "read-only") {
 		t.Errorf("write-mode 'k' should not set read-only status, got %q", m.status)

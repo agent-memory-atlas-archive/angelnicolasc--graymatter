@@ -10,6 +10,7 @@ import (
 // recallPolicy is immutable request state. It owns copied option values so a
 // request never changes the store configuration or another query's policy.
 type recallPolicy struct {
+	preview   bool // inspection suppresses every retrieval hook and durable side effect
 	minimum   *string
 	weight    float64
 	metadata  bool

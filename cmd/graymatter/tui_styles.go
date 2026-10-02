@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // ── Palette ──────────────────────────────────────────────────────────────────
@@ -170,7 +171,7 @@ func truncateCells(s string, max int) string {
 	return string(out) + "…"
 }
 
-func kpiBlock(label, value, unit string, accent lipgloss.Color, width int) string {
+func kpiBlock(label, value, unit string, accent color.Color, width int) string {
 	if width < 10 {
 		width = 10
 	}
@@ -199,14 +200,14 @@ func kpiBlock(label, value, unit string, accent lipgloss.Color, width int) strin
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorSlate).
 		Padding(0, 1).
-		Width(width - 2).
+		Width(width).
 		Render(body)
 }
 
 // hbar renders a horizontal bar using Unicode block-partial characters so it
 // can represent sub-cell precision. value/max ∈ [0, 1] range. width is the
 // total cell count available for the bar glyphs (not counting label).
-func hbar(value, max float64, width int, c lipgloss.Color) string {
+func hbar(value, max float64, width int, c color.Color) string {
 	if width <= 0 {
 		return ""
 	}
@@ -247,7 +248,7 @@ func hbar(value, max float64, width int, c lipgloss.Color) string {
 
 // spark renders a sparkline of values, scaled to the [0, peak] range over a
 // fixed width (one cell per value). If len(values) > width, the tail is used.
-func spark(values []int, c lipgloss.Color) string {
+func spark(values []int, c color.Color) string {
 	if len(values) == 0 {
 		return ""
 	}
@@ -341,7 +342,7 @@ func padLeft(s string, width int) string {
 // from 1/8 to a full cell renders as either `▖` (tail) or `▄` (full). The
 // coarse partial set is deliberate — at 15–18 px cell heights most fonts
 // render mid-sub-cell glyphs with jitter; `▄/▖` always line up cleanly.
-func hbarSlim(value, max float64, width int, c lipgloss.Color) string {
+func hbarSlim(value, max float64, width int, c color.Color) string {
 	if width <= 0 {
 		return ""
 	}

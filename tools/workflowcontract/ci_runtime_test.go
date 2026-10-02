@@ -70,7 +70,7 @@ func parallelCIErrors(body string) []string {
 	require(ciStep(benchmarkJob, "Source-replace the library into the CLI module"), "working-directory: cmd/graymatter\n        run: go mod edit -replace github.com/angelnicolasc/graymatter=../..")
 	for name, command := range map[string]string{
 		"Test core library with coverage": "go test -race -count=1 -timeout=600s -coverprofile=coverage-core.out -covermode=atomic ./pkg/memory/...",
-		"Test CLI module with coverage":   "go test -race -count=1 -timeout=300s -coverprofile=../../coverage-cli.out -covermode=atomic ./internal/harness/... ./internal/kg/... ./internal/server/... ./internal/plugin/... ./internal/mcp/... ./internal/session/... ./internal/daemon/... ./internal/httpauth/... ./internal/hookpacket/...",
+		"Test CLI module with coverage":   "go test -race -count=1 -timeout=300s -coverprofile=../../coverage-cli.out -covermode=atomic ./internal/harness/... ./internal/kg/... ./internal/server/... ./internal/plugin/... ./internal/mcp/... ./internal/session/... ./internal/daemon/... ./internal/httpauth/... ./internal/hookpacket/... ./internal/usage/...",
 		"Test root package":               "go test -race -count=1 -timeout=300s .",
 		"Test hook benchmark validation":  "go test -race -short -count=1 ./benchmarks/hook_latency/",
 	} {
@@ -90,7 +90,7 @@ func parallelCIErrors(body string) []string {
 	timingStep := ciStep(testJob, "Test CLI entrypoint package")
 	for _, fragment := range []string{
 		"working-directory: cmd/graymatter", "shell: bash", "set -euo pipefail",
-		"go test -json -race -count=1 -timeout=300s . |", "tee ../../cli-tests.json |",
+		"go test -json -race -count=1 -timeout=600s . |", "tee ../../cli-tests.json |",
 		`go run ../../tools/testtiming -summary "$GITHUB_STEP_SUMMARY"`,
 	} {
 		require(timingStep, fragment)
@@ -115,6 +115,7 @@ func TestParallelCIContractRejectsLostGates(t *testing.T) {
 	body := read(t, "ci")
 	for name, mutation := range map[string][2]string{
 		"lost internal package":    {"./internal/daemon/...", ""},
+		"lost usage coverage":      {"./internal/usage/...", ""},
 		"weaker coverage":          {"$TOTAL < 70", "$TOTAL < 60"},
 		"lost package":             {"./benchmarks/revision_currency/...", ""},
 		"lost race detector":       {"go test -race -count=1 -timeout=1200s", "go test -count=1 -timeout=1200s"},

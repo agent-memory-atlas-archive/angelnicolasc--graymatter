@@ -24,9 +24,9 @@ When in doubt, open an issue first. A quick description of what you're building 
 
 ## Setup
 
-**Requirements:** Go 1.23+, no Docker, no external services.
+**Requirements:** Go 1.25.5+, no Docker, no external services.
 
-The workspace declares `go 1.23.0`, so an older toolchain either fetches 1.23
+The workspace declares `go 1.25.5`, so an older toolchain either fetches 1.25.5
 or refuses outright when `GOTOOLCHAIN=local` — which is what container images
 set. The shipped binary is built without CGO; that constraint is about the
 release artifact, not about your machine. See the note on `-race` below.
@@ -61,16 +61,22 @@ Keep them separate. CLI dependencies (bubbletea, cobra, etc.) must not appear in
 
 ```bash
 # Core library and the public API surface — no network, no LLM, no Docker
-go test -count=1 -timeout=120s ./...
+go test -count=1 -timeout=1200s ./...
 
 # CLI, TUI, server and the command entrypoint
 cd cmd/graymatter
-go test -count=1 -timeout=300s ./...
+go test -count=1 -timeout=600s ./...
 ```
 
 Use `./...` rather than naming packages. Both commands used to enumerate
 subtrees, which quietly excluded the root package and `cmd/graymatter` itself,
 so tests living there passed locally and were never run by anyone else.
+
+Run each command block from the workspace root. The root `./...` also includes
+benchmark packages, whose complete checks can need the 1200-second ceiling
+used by CI. For a shorter correctness pass, use
+`go test -short -count=1 -timeout=600s ./...` at the root. The CLI's full-suite
+ceiling is 600 seconds, including its real-binary acceptance tests.
 
 ### The race detector
 
@@ -80,10 +86,10 @@ you touch anything concurrent — the daemon, the RPC layer, the store handles,
 the TUI's background loads:
 
 ```bash
-go test -race -count=1 -timeout=120s ./...
+go test -race -count=1 -timeout=1200s ./...
 
 cd cmd/graymatter
-go test -race -count=1 -timeout=300s ./...
+go test -race -count=1 -timeout=600s ./...
 ```
 
 `-race` is the one thing here that needs a C compiler, because the detector is
@@ -138,8 +144,8 @@ go test -fuzz=FuzzTokenize -fuzztime=30s ./pkg/memory/...
 2. Add or update tests. The CI will enforce coverage.
 3. Run the full test suite locally:
    ```bash
-   go test -count=1 -timeout=120s ./... && \
-   cd cmd/graymatter && go test -count=1 -timeout=300s ./...
+   go test -count=1 -timeout=1200s ./... && \
+   cd cmd/graymatter && go test -count=1 -timeout=600s ./...
    ```
 4. Open the PR against `main`. Keep the title concise (`fix:`, `feat:`, `test:`, `docs:`, `refactor:`).
 

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"math"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -86,6 +87,7 @@ func orderedEligibleVectors(results []VectorResult, eligible map[string]bool) []
 // client's memory with it.
 type chromemVectorStore struct {
 	db          *chromem.DB
+	readOnly    bool
 	mu          sync.Mutex
 	collections map[string]*chromem.Collection
 	// Native filtered exhaustion depends on Count and QueryEmbedding seeing
@@ -107,6 +109,23 @@ func newChromemVectorStore(dataDir string) (*chromemVectorStore, error) {
 	}, nil
 }
 
+// Inspection can load an existing vector index but must never create a missing
+// directory or collection. Missing collections remain empty in memory.
+func newReadOnlyChromemVectorStore(dataDir string) (*chromemVectorStore, error) {
+	path := filepath.Join(dataDir, "vectors")
+	db := chromem.NewDB()
+	if _, err := os.Stat(path); err == nil {
+		var openErr error
+		db, openErr = chromem.NewPersistentDB(path, false)
+		if openErr != nil {
+			return nil, openErr
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	return &chromemVectorStore{db: db, readOnly: true, collections: make(map[string]*chromem.Collection)}, nil
+}
+
 func (c *chromemVectorStore) EnsureCollection(name string) error {
 	_, err := c.collection(name)
 	return err
@@ -121,6 +140,18 @@ func (c *chromemVectorStore) collection(name string) (*chromem.Collection, error
 	if col, ok := c.collections[name]; ok {
 		return col, nil
 	}
+	if c.readOnly {
+		col := c.db.GetCollection(name, nil)
+		if col == nil {
+			var err error
+			col, err = chromem.NewDB().GetOrCreateCollection(name, nil, nil)
+			if err != nil {
+				return nil, err
+			}
+		}
+		c.collections[name] = col
+		return col, nil
+	}
 	col, err := c.db.GetOrCreateCollection(name, nil, nil)
 	if err != nil {
 		return nil, err
@@ -130,6 +161,9 @@ func (c *chromemVectorStore) collection(name string) (*chromem.Collection, error
 }
 
 func (c *chromemVectorStore) AddDocument(ctx context.Context, collection, id, content string, embedding []float32, metadata map[string]string) error {
+	if c.readOnly {
+		return ErrStoreReadOnly
+	}
 	col, err := c.collection(collection)
 	if err != nil {
 		return err
@@ -145,9 +179,9 @@ func (c *chromemVectorStore) AddDocument(ctx context.Context, collection, id, co
 }
 
 func (c *chromemVectorStore) Query(ctx context.Context, collection string, embedding []float32, n int) ([]VectorResult, error) {
-	col, err := c.collection(collection)
-	if err != nil {
-		return nil, err
+	col := c.queryCollection(collection)
+	if col == nil {
+		return nil, nil
 	}
 	count := col.Count()
 	if count == 0 || n <= 0 {
@@ -189,6 +223,21 @@ func (c *chromemVectorStore) Query(ctx context.Context, collection string, embed
 	return results, nil
 }
 
+// A query never repairs or creates derived data, even on a writable store.
+// Collections are created by writes; a missing collection is an empty index.
+func (c *chromemVectorStore) queryCollection(name string) *chromem.Collection {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if col := c.collections[name]; col != nil {
+		return col
+	}
+	col := c.db.GetCollection(name, nil)
+	if col != nil {
+		c.collections[name] = col
+	}
+	return col
+}
+
 // QueryEligible scans and orders the native population once, then intersects
 // canonical eligibility before truncation. Vector documents may outlive their
 // canonical facts; aliases, tombstones and orphan IDs cannot occupy the budget.
@@ -202,9 +251,9 @@ func (c *chromemVectorStore) queryEligible(ctx context.Context, collection strin
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	col, err := c.collection(collection)
-	if err != nil {
-		return nil, false, err
+	col := c.queryCollection(collection)
+	if col == nil {
+		return nil, true, nil
 	}
 	c.populationMu.RLock()
 	defer c.populationMu.RUnlock()

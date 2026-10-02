@@ -7,10 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
-
 	graymatter "github.com/angelnicolasc/graymatter"
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/kg"
 )
@@ -22,6 +18,8 @@ var captureDir = os.Getenv("GM_CAPTURE_DIR")
 func seedForCapture(t *testing.T) cliStore {
 	t.Helper()
 	cfg := graymatter.DefaultConfig()
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.AsyncConsolidate = false
 	cfg.DataDir = t.TempDir()
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
@@ -74,22 +72,8 @@ func seedForCapture(t *testing.T) cliStore {
 
 func newCaptureTUI(t *testing.T, store cliStore) tuiModel {
 	t.Helper()
-	nl := func(title string) list.Model {
-		l := list.New(nil, list.NewDefaultDelegate(), 40, 20)
-		l.Title = title
-		l.SetShowStatusBar(false)
-		l.SetFilteringEnabled(true)
-		return l
-	}
-	m := tuiModel{
-		store:       store,
-		width:       124,
-		height:      36,
-		agentList:   nl("Agents"),
-		factList:    nl("Facts"),
-		sessionList: nl("Sessions"),
-		nodeList:    nl("KG Nodes"),
-	}
+	m := newTUIModel(store, "", store.IsReadOnly(), "dark", false)
+	m.width, m.height = 124, 36
 	m.updateSizes()
 	return m
 }
@@ -105,6 +89,7 @@ func loadAll(t *testing.T, m tuiModel, agent string) tuiModel {
 		}
 	}
 	if agent != "" {
+		m.namespace = agent
 		if msg := m.loadFacts(agent)(); msg != nil {
 			mm, _ := m.Update(msg)
 			m = mm.(tuiModel)
@@ -135,30 +120,27 @@ func TestCapture(t *testing.T) {
 	// SetColorProfile is package-level state in lipgloss, so forcing colour here
 	// would otherwise leak into every test that runs after this one in the same
 	// package and make their rendered output depend on test order.
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
 	store := seedForCapture(t)
 	base := loadAll(t, newCaptureTUI(t, store), "graymatter-backend")
 
 	m := base
 	m.activeTab = tabMemory
-	writeCapture(t, "01-memory", m.View())
+	writeCapture(t, "01-memory", m.View().Content)
 
 	m = base
 	m.activeTab = tabStats
-	writeCapture(t, "02-stats", m.View())
+	writeCapture(t, "02-stats", m.View().Content)
 
 	m = base
 	m.activeTab = tabGraph
-	writeCapture(t, "03-graph", m.View())
+	writeCapture(t, "03-graph", m.View().Content)
 
 	// A transient failure: the UI stays usable, the header carries the warning.
 	m = base
 	m.activeTab = tabMemory
 	broken, _ := m.Update(errMsg{errCaptureDead})
-	writeCapture(t, "04-error-banner", broken.(tuiModel).View())
+	writeCapture(t, "04-error-banner", broken.(tuiModel).View().Content)
 
 	// Store gone while on the dashboard.
 	dead := newCaptureTUI(t, deadStore{})
@@ -166,10 +148,12 @@ func TestCapture(t *testing.T) {
 	dead.dashboard = msg.(dashboardLoadedMsg).data
 	dead.activeTab = tabStats
 	d2, _ := dead.Update(errMsg{errCaptureDead})
-	writeCapture(t, "05-store-unreachable", d2.(tuiModel).View())
+	writeCapture(t, "05-store-unreachable", d2.(tuiModel).View().Content)
 
 	// A brand-new project: empty, but not alarming.
 	cfg := graymatter.DefaultConfig()
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.AsyncConsolidate = false
 	cfg.DataDir = t.TempDir()
 	fresh, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
@@ -178,7 +162,7 @@ func TestCapture(t *testing.T) {
 	t.Cleanup(func() { _ = fresh.Close() })
 	em := loadAll(t, newCaptureTUI(t, &directStore{mem: fresh, store: fresh.Advanced()}), "")
 	em.activeTab = tabStats
-	writeCapture(t, "06-empty", em.View())
+	writeCapture(t, "06-empty", em.View().Content)
 }
 
 var errCaptureDead = errCapture{}
@@ -211,9 +195,10 @@ func TestTUI_GraphTabFitsViewport(t *testing.T) {
 		m := newCaptureTUI(t, st)
 		m.width, m.height = size[0], size[1]
 		m.activeTab = tabGraph
+		m.focus = 1 // compact layouts show list or inspector, selected explicitly
 		m.updateSizes()
 		m = loadAll(t, m, "")
-		out := m.View()
+		out := m.View().Content
 		lines := strings.Count(out, "\n") + 1
 		if lines > m.height {
 			t.Errorf("graph tab at %dx%d renders %d lines (viewport %d)", m.width, m.height, lines, m.height)
@@ -221,7 +206,7 @@ func TestTUI_GraphTabFitsViewport(t *testing.T) {
 		if !strings.Contains(out, "GRAYMATTER") {
 			t.Errorf("graph tab at %dx%d lost the header", m.width, m.height)
 		}
-		if !strings.Contains(out, "1-4") {
+		if !strings.Contains(out, "1–6") {
 			t.Errorf("graph tab at %dx%d lost the footer", m.width, m.height)
 		}
 		// The detail pane must show the highlighted node, never dead space.
@@ -248,7 +233,7 @@ func TestTUI_PinnedFactMarker(t *testing.T) {
 	m.factList.SetItem(0, sel)
 	m.memPane = memPaneFacts
 
-	out := m.View()
+	out := m.View().Content
 	if !strings.Contains(out, "\u2605 ") {
 		t.Error("pinned star marker missing from fact list")
 	}

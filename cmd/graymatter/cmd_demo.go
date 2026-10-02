@@ -6,16 +6,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	graymatter "github.com/angelnicolasc/graymatter"
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/daemon"
+	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/kg"
+	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/usage"
 )
 
 // demoCmd is the "show me" command: one invocation plants a multi-agent
 // corpus, runs consolidation, turns on the knowledge graph, and opens the TUI
-// on the demo store. No API keys, no Ollama — the keyword embedder is the
-// default when nothing else is configured, so the whole path is offline.
+// on the demo store. No API keys, no Ollama — the keyword embedder is
+// forced for this store even when the user's environment configures providers.
 func demoCmd() *cobra.Command {
 	var (
 		useTmp  bool
@@ -42,7 +46,7 @@ This is a scratch store. Your own agents start with: graymatter init`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := seedDir
-			if useTmp {
+			if useTmp && !script {
 				tmp, err := os.MkdirTemp("", "graymatter-demo-")
 				if err != nil {
 					return fmt.Errorf("create temp dir: %w", err)
@@ -67,8 +71,7 @@ This is a scratch store. Your own agents start with: graymatter init`,
 				}
 			}
 
-			// The KG sentinel must exist before the daemon spawns: a daemon
-			// that started earlier keeps its own wiring.
+			// Keep the graph opt-in marker for later explicit CLI exploration.
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return fmt.Errorf("create demo dir: %w", err)
 			}
@@ -76,7 +79,7 @@ This is a scratch store. Your own agents start with: graymatter init`,
 				return fmt.Errorf("write kg sentinel: %w", err)
 			}
 
-			store, err := openStoreIn(abs)
+			store, err := openDemoStore(cmd.Context(), abs)
 			if err != nil {
 				return err
 			}
@@ -86,11 +89,13 @@ This is a scratch store. Your own agents start with: graymatter init`,
 			if err != nil {
 				return err
 			}
+			if err := seedDemoUsage(cmd.Context(), abs); err != nil {
+				return fmt.Errorf("seed usage demonstration: %w", err)
+			}
 
-			// Two consolidation cycles per agent. With no LLM configured this
-			// applies decay and pruning deterministically; with one configured
-			// it also summarises — the demo does not depend on either.
-			ctx := context.Background()
+			// The demo configuration disables remote summarisation, including
+			// providers configured in the caller's environment.
+			ctx := cmd.Context()
 			for _, agent := range demoAgents() {
 				for cycle := 0; cycle < 2; cycle++ {
 					if err := store.Consolidate(ctx, agent.id); err != nil {
@@ -102,7 +107,11 @@ This is a scratch store. Your own agents start with: graymatter init`,
 			if !quiet {
 				fmt.Printf("GrayMatter demo ready at %s\n", abs)
 				fmt.Printf("  %d agent(s), %d fact(s) planted, 2 consolidation cycles, knowledge graph on\n\n", len(demoAgents()), planted)
-				fmt.Println("The TUI is opening. After it, try:")
+				if noTUI {
+					fmt.Println("Try the seeded store:")
+				} else {
+					fmt.Println("The TUI is opening. After it, try:")
+				}
 				fmt.Println("  graymatter --dir \"" + abs + "\" kg render --out kg-graph.html")
 				fmt.Println("  graymatter --dir \"" + abs + "\" recall sales-closer \"Maria follow up\"")
 				fmt.Println("  graymatter --dir \"" + abs + "\" export --format obsidian --out demo-vault --include-graph")
@@ -115,8 +124,7 @@ This is a scratch store. Your own agents start with: graymatter init`,
 
 			// Open the TUI on the demo store: same entry point the tui command
 			// uses, with the data dir pointed at the demo.
-			dataDir = abs
-			return tuiCmd().RunE(cmd, nil)
+			return runTUI(cmd.Context(), store, abs, false, "dark", true)
 		},
 	}
 	cmd.Flags().BoolVar(&useTmp, "tmp", false, "seed the demo in a fresh temp directory instead of .graymatter-demo")
@@ -129,6 +137,60 @@ This is a scratch store. Your own agents start with: graymatter init`,
 }
 
 const defaultDemoDir = ".graymatter-demo"
+
+type demoTUIStore struct{ *directStore }
+
+func (*demoTUIStore) Demo() bool { return true }
+
+func demoConfig(dir string) graymatter.Config {
+	cfg := graymatter.DefaultConfig()
+	cfg.DataDir = dir
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.ConsolidateLLM = ""
+	cfg.AnthropicAPIKey, cfg.OpenAIAPIKey, cfg.VoyageAPIKey = "", "", ""
+	cfg.AsyncConsolidate = false
+	cfg.StrictWrite = true
+	return cfg
+}
+
+func openDemoStore(ctx context.Context, dir string) (*demoTUIStore, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	mem, err := graymatter.NewWithConfig(demoConfig(dir))
+	if err != nil {
+		return nil, fmt.Errorf("open local demo (close any other demo using this directory): %w", err)
+	}
+	adv := mem.Advanced()
+	g, err := kg.Open(adv.DB())
+	if err != nil {
+		_ = mem.Close()
+		return nil, err
+	}
+	adv.SetKG(kg.NewGraphAdapter(g), kg.NewExtractorAdapter(kg.NewExtractor(kg.ExtractorConfig{})))
+	return &demoTUIStore{&directStore{mem: mem, store: adv}}, nil
+}
+
+func seedDemoUsage(ctx context.Context, dir string) error {
+	now := time.Now().UTC()
+	reset := now.Add(2*time.Hour + 16*time.Minute)
+	percent, contextPercent := 54.0, 6.6725
+	used, limit := int64(13345), int64(200000)
+	sample := usage.Snapshot{
+		Version: 1, GeneratedAt: now,
+		Quotas: []usage.QuotaSnapshot{{ID: "demo-quota", Provider: "Demo subscription", AccountID: "demo-account", Label: "Synthetic plan", Window: "5h", Source: "demo / synthetic", UsedPercent: &percent, ResetAt: &reset, ObservedAt: now}},
+		Costs:  []usage.CostObservation{{ID: "demo-cost", Provider: "Demo API", AccountID: "demo-account", Amount: "12.48", Currency: "usd", Kind: "estimate", Scope: "session:demo-session", Source: "demo / synthetic", StartAt: now.Add(-24 * time.Hour), EndAt: now, ObservedAt: now}},
+		Contexts: []usage.ContextSnapshot{{Provider: "Demo harness", AccountID: "demo-account", SessionID: "demo-session", Model: "example-model", Source: "demo / synthetic", UsedTokens: &used, LimitTokens: &limit, UsedPercent: &contextPercent, Estimated: true, ObservedAt: now, Components: []usage.ContextComponent{
+			{Name: "Instructions", Tokens: 3900, Estimated: true},
+			{Name: "Tool schemas", Tokens: 4500, Estimated: true},
+			{Name: "Workspace files", Tokens: 2095, Estimated: true},
+			{Name: "Loaded skills", Tokens: 1000, Estimated: true},
+			{Name: "Retrieved memory", Tokens: 1850, Estimated: true},
+		}}},
+		Warnings: []string{"DEMO: all usage values are synthetic; no account data was requested."},
+	}
+	return usage.Import(ctx, dir, sample)
+}
 
 // openStoreIn opens the store rooted at dir, daemon mode included — the demo
 // runs exactly the machinery production runs, so what the TUI shows is what
@@ -226,7 +288,7 @@ func removeDemoDir(dir string) error {
 	}
 	for _, e := range entries {
 		switch e.Name() {
-		case "gray.db", "MEMORY.md", "gray.db.lock", "hooks.log", "kg.auto", "daemon.log", "vectors", "hooks", "export":
+		case "gray.db", "MEMORY.md", "gray.db.lock", "hooks.log", "kg.auto", "daemon.log", "vectors", "hooks", "export", "usage":
 		default:
 			return fmt.Errorf("refusing to delete %s: it contains %q, which is not a GrayMatter data file", dir, e.Name())
 		}
@@ -234,29 +296,33 @@ func removeDemoDir(dir string) error {
 	return os.RemoveAll(dir)
 }
 
-// printDemoScript emits the equivalent shell steps — the point of --script is
-// that a skeptical reader can see there is no hidden state.
+// printDemoScript preserves the demo's explicit offline configuration. Calling
+// ordinary remember/consolidate/tui commands would inherit provider credentials
+// and user Usage connections and would not be equivalent to this demo.
 func printDemoScript(cmd *cobra.Command, abs string) error {
 	var sb strings.Builder
 	sb.WriteString("#!/usr/bin/env sh\n")
-	sb.WriteString("# graymatter demo --script — the exact steps `graymatter demo` runs.\n")
-	sb.WriteString("# Generated by: graymatter demo --script\n\n")
-	sb.WriteString(fmt.Sprintf("mkdir -p %q\n", abs))
-	sb.WriteString(fmt.Sprintf("touch %q\n", daemon.KGSentinelPath(abs)))
-	sb.WriteString("\n# plant the corpus (each fact a durable sentence):\n")
+	sb.WriteString("# Offline sample store: keyword retrieval, local graph extraction, synthetic Usage.\n")
+	sb.WriteString("# The demo command enforces isolation from inherited provider settings.\nset -eu\n\n")
+	sb.WriteString("# Seeded corpus (existing namespaces are preserved):\n")
 	for _, agent := range demoAgents() {
 		for _, fact := range agent.facts {
-			sb.WriteString(fmt.Sprintf("graymatter --dir %q remember %q %q\n", abs, agent.id, fact))
+			sb.WriteString(fmt.Sprintf("# %s: %s\n", agent.id, fact))
 		}
 	}
-	sb.WriteString("\n# two consolidation cycles per agent:\n")
-	for _, agent := range demoAgents() {
-		sb.WriteString(fmt.Sprintf("graymatter --dir %q consolidate %q\n", abs, agent.id))
-		sb.WriteString(fmt.Sprintf("graymatter --dir %q consolidate %q\n", abs, agent.id))
+	sb.WriteString("\n# Seed, consolidate locally twice, and open the labeled demo workbench.\n")
+	sb.WriteString("graymatter demo")
+	if tmp, _ := cmd.Flags().GetBool("tmp"); tmp {
+		sb.WriteString(" --tmp")
+	} else {
+		sb.WriteString(" --dir '" + strings.ReplaceAll(abs, "'", "'\"'\"'") + "'")
 	}
-	sb.WriteString("\n# render the graph and open the dashboard:\n")
-	sb.WriteString(fmt.Sprintf("graymatter --dir %q kg render --out kg-graph.html\n", abs))
-	sb.WriteString(fmt.Sprintf("graymatter --dir %q tui\n", abs))
+	for _, name := range []string{"no-tui", "fresh"} {
+		if on, _ := cmd.Flags().GetBool(name); on {
+			sb.WriteString(" --" + name)
+		}
+	}
+	sb.WriteString("\n")
 	_, err := fmt.Fprint(cmd.OutOrStdout(), sb.String())
 	return err
 }

@@ -7,9 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/viewport"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	graymatter "github.com/angelnicolasc/graymatter"
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/harness"
@@ -37,22 +35,10 @@ func (deadStore) Close() error                { return nil }
 // and a panic here would be the product's rather than the test's.
 func newTestTUI(t *testing.T, store cliStore) tuiModel {
 	t.Helper()
-	nl := func(title string) list.Model {
-		l := list.New(nil, list.NewDefaultDelegate(), 40, 20)
-		l.Title = title
-		return l
-	}
-	return tuiModel{
-		store:       store,
-		width:       120,
-		height:      32,
-		agentList:   nl("Agents"),
-		factList:    nl("Facts"),
-		sessionList: nl("Sessions"),
-		nodeList:    nl("KG Nodes"),
-		detail:      viewport.New(40, 20),
-		nodeDetail:  viewport.New(40, 20),
-	}
+	m := newTUIModel(store, "", store.IsReadOnly(), "dark", false)
+	m.width, m.height = 120, 32
+	m.updateSizes()
+	return m
 }
 
 // TestTUI_ErrorDoesNotTakeOverTheScreen pins that a failed load leaves the UI
@@ -62,12 +48,12 @@ func TestTUI_ErrorDoesNotTakeOverTheScreen(t *testing.T) {
 	m := newTestTUI(t, deadStore{})
 
 	msg := m.loadAgents()()
-	em, ok := msg.(errMsg)
+	em, ok := msg.(resourceErrMsg)
 	if !ok {
-		t.Fatalf("loadAgents returned %T, want errMsg", msg)
+		t.Fatalf("loadAgents returned %T, want resourceErrMsg", msg)
 	}
 	updated, _ := m.Update(em)
-	view := updated.(tuiModel).View()
+	view := updated.(tuiModel).View().Content
 
 	if strings.Contains(view, "Press q to quit") {
 		t.Error("the error still replaces the whole UI")
@@ -94,11 +80,11 @@ func TestTUI_ErrorClearsOnRecovery(t *testing.T) {
 		t.Fatal("error was not recorded")
 	}
 
-	recovered, _ := broken.(tuiModel).Update(agentsLoadedMsg{[]agentItem{{id: "a", count: 1}}})
+	recovered, _ := broken.(tuiModel).Update(agentsLoadedMsg{agents: []agentItem{{id: "a", count: 1}}})
 	if got := recovered.(tuiModel).err; got != nil {
 		t.Errorf("a successful load left the error in place: %v", got)
 	}
-	if strings.Contains(recovered.(tuiModel).View(), "⚠") {
+	if strings.Contains(recovered.(tuiModel).View().Content, "⚠") {
 		t.Error("the error indicator outlived the failure")
 	}
 }
@@ -134,6 +120,8 @@ func TestDashboard_ReportsUnreachableInsteadOfZeros(t *testing.T) {
 // ignore.
 func TestTUI_EmptyStoreIsNotAnError(t *testing.T) {
 	cfg := graymatter.DefaultConfig()
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.AsyncConsolidate = false
 	cfg.DataDir = t.TempDir()
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {

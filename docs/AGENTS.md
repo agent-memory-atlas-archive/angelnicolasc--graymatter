@@ -589,7 +589,8 @@ Other useful subcommands:
 | `graymatter consolidate <agent_id>` | Run one consolidation cycle through the daemon's policy |
 | `graymatter kg render --out graph.html` | Self-contained force-graph page (offline, tooltips carry fact-ID receipts); `--out graph.dot` for Graphviz |
 | `graymatter mcp serve` | Start the MCP server (stdio default, `--http 127.0.0.1:8080` for HTTP; the HTTP transport requires a bearer token) |
-| `graymatter tui` | 4-view terminal dashboard (live observability) |
+| `graymatter tui` | Six-view memory workbench; see [controls and scope](tui.md) |
+| `graymatter usage` | Configure, import and inspect quota/cost/context observations; see [Usage](usage.md) |
 | `graymatter export --format obsidian --out vault/` | Dump all memories to a Markdown vault |
 | `graymatter run <skill.md>` | Execute a SKILL.md agent file |
 | `graymatter sessions list` | List managed agent sessions |
@@ -615,16 +616,18 @@ For the public API surface and stability promises, see [`docs/api-stability.md`]
 
 GrayMatter persists to bbolt, a single-writer embedded DB. **Only one process may hold the write lock at a time.** This shows up the moment you run two MCP-aware agents in the same workspace (e.g. Claude Code + OpenCode + the `graymatter tui` dashboard).
 
-What happens in v0.5.x:
+Normal CLI, TUI and MCP processes connect to one store daemon, which owns the
+write lock. Clients can operate concurrently; ordinary clients auto-start the
+daemon when necessary. `--no-daemon` opts into direct access and reintroduces
+file-lock constraints. See [ADR-002](decisions/002-bbolt-single-writer.md).
 
-- The `graymatter` CLI and TUI auto-detect a held lock and **fall back to read-only mode**. You can still recall, but `remember` / `checkpoint save` will refuse with a clear error rather than block forever.
-- MCP servers spawned by separate clients will fight over the lock. The **second one to start fails fast**, not silently.
-- Workarounds:
-  - Run a single shared `graymatter mcp serve --http 127.0.0.1:8080` and point all clients at it (most robust). The HTTP transport requires `Authorization: Bearer <token>`; the token lives in `<data-dir>/graymatter.http-token`
-  - Quit one agent's MCP integration before working from the other
-  - Use the `tui` in `--read-only` mode explicitly when you only want to inspect
+`tui --read-only` requires an existing store and connects only to an already
+running daemon. It blocks mutations for that TUI client without changing other
+clients' permissions. Explicit `--no-daemon --read-only` opens the store directly
+without creating it; that reader still cannot coexist with a direct writer.
 
-If you're an agent and `memory_add` returns a lock error, **degrade gracefully**: keep the fact in your in-context working memory, surface the error to the user, suggest closing competing processes — don't retry in a loop.
+If a lock or connection error occurs, preserve unsaved state and report the
+specific failure. Do not replay a write whose outcome is unknown.
 
 ---
 

@@ -75,8 +75,10 @@ type Server struct {
 	listener  net.Listener
 	listenErr atomic.Value // error
 
-	connsMu sync.Mutex
-	conns   map[net.Conn]struct{}
+	connsMu         sync.Mutex
+	conns           map[net.Conn]struct{}
+	inspectionMu    sync.Mutex
+	inspectionCalls map[string]inspectionCallState
 }
 
 // NewServer constructs a Server wrapping backend. The consolidateCfg is
@@ -241,6 +243,7 @@ func (s *Server) Serve(listener net.Listener) error {
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
+		s.cancelInspections()
 		s.connsMu.Lock()
 		if s.listener != nil {
 			_ = s.listener.Close()
@@ -457,6 +460,7 @@ func (s *Server) Ping(req *PingRequest, resp *PingResponse) error {
 	defer s.touch()
 	resp.Protocol = Protocol
 	resp.Capabilities = s.confidenceCapabilities()
+	resp.Capabilities = append(resp.Capabilities, s.inspectionCapabilities()...)
 	weight := memory.DefaultConfidenceWeight
 	if provider, ok := s.backend.(DefaultConfidenceProvider); ok {
 		weight = provider.DefaultConfidenceWeight()

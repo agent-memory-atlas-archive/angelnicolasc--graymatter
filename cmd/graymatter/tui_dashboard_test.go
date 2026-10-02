@@ -15,6 +15,8 @@ import (
 func TestDashboardRender_Empty(t *testing.T) {
 	dir := t.TempDir()
 	cfg := graymatter.DefaultConfig()
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.AsyncConsolidate = false
 	cfg.DataDir = dir
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
@@ -51,6 +53,8 @@ func TestDashboardRender_Empty(t *testing.T) {
 func TestDashboardRender_WithFacts(t *testing.T) {
 	dir := t.TempDir()
 	cfg := graymatter.DefaultConfig()
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.AsyncConsolidate = false
 	cfg.DataDir = dir
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
@@ -125,6 +129,8 @@ func TestDashboardRender_WithFacts(t *testing.T) {
 func TestDashboardRender_WithTokens(t *testing.T) {
 	dir := t.TempDir()
 	cfg := graymatter.DefaultConfig()
+	cfg.EmbeddingMode = graymatter.EmbeddingKeyword
+	cfg.AsyncConsolidate = false
 	cfg.DataDir = dir
 	mem, err := graymatter.NewWithConfig(cfg)
 	if err != nil {
@@ -183,11 +189,11 @@ func TestDashboardRender_WithTokens(t *testing.T) {
 // TestFormatUSD sanity-checks the USD formatter used by the Token Cost panel.
 func TestFormatUSD(t *testing.T) {
 	cases := map[float64]string{
-		0:        "$0.00",
-		0.05:     "$0.05",
-		12.8:     "$12.80",
-		999.99:   "$999.99",
-		1500:     "$1.5K",
+		0:         "$0.00",
+		0.05:      "$0.05",
+		12.8:      "$12.80",
+		999.99:    "$999.99",
+		1500:      "$1.5K",
 		2_500_000: "$2.5M",
 	}
 	for v, want := range cases {
@@ -200,11 +206,11 @@ func TestFormatUSD(t *testing.T) {
 // TestFormatBytes sanity-checks the unit formatter.
 func TestFormatBytes(t *testing.T) {
 	cases := map[int64]string{
-		0:            "0 B",
-		512:          "512 B",
-		1024:         "1.0 KB",
-		1024 * 1024:  "1.0 MB",
-		1_500_000:    "1.4 MB",
+		0:           "0 B",
+		512:         "512 B",
+		1024:        "1.0 KB",
+		1024 * 1024: "1.0 MB",
+		1_500_000:   "1.4 MB",
 	}
 	for n, want := range cases {
 		if got := formatBytes(n); got != want {

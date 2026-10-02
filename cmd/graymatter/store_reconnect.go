@@ -16,6 +16,7 @@ import (
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/server"
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/session"
 	"github.com/angelnicolasc/graymatter/pkg/memory"
+	memoryrpc "github.com/angelnicolasc/graymatter/pkg/memory/rpc"
 )
 
 // The wrapper stands in for a store handle everywhere one is used, so both
@@ -93,10 +94,8 @@ func (r *reconnectingStore) redial(failed cliStore) (cliStore, error) {
 	return next, nil
 }
 
-// do runs fn, and on a dead connection reconnects and runs it exactly once
-// more. Only connection death is retried: a store error means the call reached
-// the daemon and genuinely failed, and repeating a write that already landed
-// would be worse than reporting it.
+// do retries a read after reconnecting. A dropped connection does not prove
+// a mutation failed before commit: interactive writes use mutate instead.
 func (r *reconnectingStore) do(fn func(cliStore) error) error {
 	s := r.snapshot()
 	err := fn(s)
@@ -108,6 +107,21 @@ func (r *reconnectingStore) do(fn func(cliStore) error) error {
 		return fmt.Errorf("%w (reconnect failed: %v)", err, rerr)
 	}
 	return fn(next)
+}
+
+// mutate reconnects through a read-only health probe, then dispatches the write
+// exactly once. Even ErrShutdown can be assigned to an already-pending net/rpc
+// call during concurrent Close, so no write error is proof of non-dispatch.
+func (r *reconnectingStore) mutate(fn func(cliStore) error) error {
+	if err := r.Ready(); err != nil {
+		return err
+	}
+	err := fn(r.snapshot())
+	var networkError net.Error
+	if connDead(err) || errors.Is(err, memoryrpc.ErrCallTimeout) || errors.Is(err, io.ErrClosedPipe) || errors.As(err, &networkError) {
+		return fmt.Errorf("%w: %v", memory.ErrMutationOutcomeUnknown, err)
+	}
+	return err
 }
 
 // connDead reports whether err means the connection is gone rather than the
@@ -123,14 +137,17 @@ func connDead(err error) bool {
 		errors.Is(err, net.ErrClosed)
 }
 
-// --- cliStore, every call routed through do ---
+// --- cliStore forwarding ---
 //
 // This is deliberately mechanical. Embedding the wrapped store instead would be
 // shorter and wrong: after a redial the embedded value still points at the dead
 // handle, so any method that was not overridden would keep talking to it.
 
 func (r *reconnectingStore) Remember(ctx context.Context, agentID, text string) error {
-	return r.do(func(s cliStore) error { return s.Remember(ctx, agentID, text) })
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.mutate(func(s cliStore) error { return s.Remember(ctx, agentID, text) })
 }
 
 func (r *reconnectingStore) PutReturningFact(ctx context.Context, agentID, text string) (memory.Fact, error) {
@@ -283,7 +300,7 @@ func (r *reconnectingStore) SessionsList() ([]harness.HarnessSession, error) {
 }
 
 func (r *reconnectingStore) SessionKill(id string) error {
-	return r.do(func(s cliStore) error { return s.SessionKill(id) })
+	return r.mutate(func(s cliStore) error { return s.SessionKill(id) })
 }
 
 func (r *reconnectingStore) SessionResolve(agentID, sessionID string) (string, error) {

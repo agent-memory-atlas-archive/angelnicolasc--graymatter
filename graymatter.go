@@ -77,8 +77,10 @@ func New(dataDir string) *Memory {
 // Returns an error if the data directory cannot be created or the
 // database cannot be opened.
 func NewWithConfig(cfg Config) (*Memory, error) {
-	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("graymatter: create data dir: %w", err)
+	if !cfg.ReadOnly || cfg.StrictWrite {
+		if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+			return nil, fmt.Errorf("graymatter: create data dir: %w", err)
+		}
 	}
 
 	embedder := embedding.AutoDetect(embedding.Config{

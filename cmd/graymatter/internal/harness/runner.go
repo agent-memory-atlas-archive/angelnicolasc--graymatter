@@ -81,6 +81,10 @@ type RunConfig struct {
 	// APIKey overrides ANTHROPIC_API_KEY. If empty, env var is used.
 	APIKey string
 
+	// UsageAccountID optionally associates local observations with a configured
+	// billing account. Empty keeps the honest local-harness coverage label.
+	UsageAccountID string
+
 	// Store, when non-nil, is the persistence backend the run uses (the
 	// daemon client in production). When nil, Run opens an in-process store
 	// at DataDir itself — the path tests and --no-daemon take.
@@ -276,6 +280,10 @@ func Run(ctx context.Context, cfg RunConfig) (*RunResult, error) {
 			uint64(msg.Usage.OutputTokens),
 			uint64(msg.Usage.CacheReadInputTokens),
 			uint64(msg.Usage.CacheCreationInputTokens))
+		// This separate ledger is request-idempotent and also records observed
+		// context occupancy. Accounting remains best effort and cannot break runs.
+		_ = recordUsageObservation(ctx, cfg, def.Model, sessionID, attempt, msg,
+			def.SystemPrompt, systemContent[len(def.SystemPrompt):], priorMessages, def.Task)
 
 		// Extract text from response.
 		finalReply = extractText(msg)

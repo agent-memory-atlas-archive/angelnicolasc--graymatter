@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -455,13 +456,21 @@ type idxSpineEntry struct {
 // group-wise into the ranking's order; see idxSpineOrdered for why reversing
 // entry-by-entry would be wrong.
 func idxSpineAsc(tx *bolt.Tx, agentID string) []idxSpineEntry {
+	out, _ := idxSpineAscContext(context.Background(), tx, agentID)
+	return out
+}
+
+func idxSpineAscContext(ctx context.Context, tx *bolt.Tx, agentID string) ([]idxSpineEntry, error) {
 	rb := idxBucketRO(tx, bucketIdxRecency, agentID)
 	if rb == nil {
-		return nil
+		return nil, ctx.Err()
 	}
 	out := make([]idxSpineEntry, 0, rb.Stats().KeyN)
 	c := rb.Cursor()
 	for k, v := c.First(); k != nil; k, v = c.Next() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(k) < 9 {
 			continue
 		}
@@ -474,7 +483,7 @@ func idxSpineAsc(tx *bolt.Tx, agentID string) []idxSpineEntry {
 			confidence: (flags & idxConfidenceMask) >> idxConfidenceShift,
 		})
 	}
-	return out
+	return out, ctx.Err()
 }
 
 // idxDF reads one term's document frequency. Zero means the store has never
@@ -499,12 +508,19 @@ func idxPostings(tb *bolt.Bucket, term string, out map[string]bool) {
 // caller each fact and its term frequency. The ordering is bbolt's own and is
 // what a later WAND/MaxScore layer skips along with Seek.
 func idxWalkPostings(tb *bolt.Bucket, term string, fn func(factID string, tf int)) {
+	_ = idxWalkPostingsContext(context.Background(), tb, term, fn)
+}
+
+func idxWalkPostingsContext(ctx context.Context, tb *bolt.Bucket, term string, fn func(factID string, tf int)) error {
 	if tb == nil {
-		return
+		return ctx.Err()
 	}
 	prefix := append([]byte(term), postingSep)
 	c := tb.Cursor()
 	for k, v := c.Seek(prefix); k != nil; k, v = c.Next() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(k) <= len(prefix) || string(k[:len(prefix)]) != string(prefix) {
 			break
 		}
@@ -516,6 +532,7 @@ func idxWalkPostings(tb *bolt.Bucket, term string, fn func(factID string, tf int
 		}
 		fn(string(k[len(prefix):]), tf)
 	}
+	return ctx.Err()
 }
 
 // indexCandidates is the candidate set for one query: every fact containing at
@@ -618,6 +635,10 @@ func (s *Store) idxEnsure(agentID string) bool {
 
 // idxLoadFacts reads the lite form of exactly the requested IDs.
 func (s *Store) idxLoadFacts(tx *bolt.Tx, agentID string, ids map[string]bool) (map[string]Fact, error) {
+	return s.idxLoadFactsContext(context.Background(), tx, agentID, ids)
+}
+
+func (s *Store) idxLoadFactsContext(ctx context.Context, tx *bolt.Tx, agentID string, ids map[string]bool) (map[string]Fact, error) {
 	out := make(map[string]Fact, len(ids))
 	fb := tx.Bucket(bucketFacts)
 	if fb == nil {
@@ -628,6 +649,9 @@ func (s *Store) idxLoadFacts(tx *bolt.Tx, agentID string, ids map[string]bool) (
 		return out, nil
 	}
 	for id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		raw := b.Get([]byte(id))
 		if raw == nil {
 			continue
