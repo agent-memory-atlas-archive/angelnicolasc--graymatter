@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -361,18 +362,24 @@ func (d *directStore) SessionResolve(agentID, sessionID string) (string, error) 
 }
 
 func (d *directStore) KGNodes() ([]kg.Node, error) {
-	g, err := kg.Open(d.store.DB())
+	g, err := kg.OpenRead(d.store.DB())
 	if err != nil {
-		return nil, nil // no graph yet: empty, not an error
+		if errors.Is(err, kg.ErrNoGraph) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	return g.AllNodes()
 }
 
 // KGEdges returns every edge in the graph (empty when no graph exists).
 func (d *directStore) KGEdges() ([]kg.Edge, error) {
-	g, err := kg.Open(d.store.DB())
+	g, err := kg.OpenRead(d.store.DB())
 	if err != nil {
-		return nil, nil // no graph yet: empty, not an error
+		if errors.Is(err, kg.ErrNoGraph) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	return g.AllEdges()
 }
@@ -422,30 +429,12 @@ func (d *directStore) StoreOverview() (*daemon.StoreOverviewResponse, error) {
 	}
 	resp := &daemon.StoreOverviewResponse{Agents: make([]daemon.AgentSummary, 0, len(agents))}
 	for _, a := range agents {
-		facts, err := d.store.List(a)
+		facts, err := memory.ReadFactSummary(context.Background(), d.store, a)
 		if err != nil {
 			return nil, err
 		}
-		sum := daemon.AgentSummary{Agent: a}
-		var weightSum float64
-		for _, f := range facts {
-			if f.SupersededBy != "" {
-				resp.TotalTombstones++
-				continue
-			}
-			sum.LiveFacts++
-			sum.Recalls += f.AccessCount
-			weightSum += f.Weight
-			if sum.OldestAt.IsZero() || f.CreatedAt.Before(sum.OldestAt) {
-				sum.OldestAt = f.CreatedAt
-			}
-			if f.CreatedAt.After(sum.NewestAt) {
-				sum.NewestAt = f.CreatedAt
-			}
-		}
-		if sum.LiveFacts > 0 {
-			sum.AvgWeight = weightSum / float64(sum.LiveFacts)
-		}
+		sum := daemon.AgentSummary{Agent: a, LiveFacts: facts.Live.FactCount, Recalls: facts.Recalls, AvgWeight: facts.Live.AvgWeight, OldestAt: facts.Live.OldestAt, NewestAt: facts.Live.NewestAt}
+		resp.TotalTombstones += facts.Tombstones
 		resp.TotalAgents++
 		resp.TotalLiveFacts += sum.LiveFacts
 		resp.Agents = append(resp.Agents, sum)
@@ -459,9 +448,12 @@ func (d *directStore) StoreOverview() (*daemon.StoreOverviewResponse, error) {
 // handle; auto-population in direct mode is env-gated.
 func (d *directStore) KGState() (*daemon.KGStateResponse, error) {
 	resp := &daemon.KGStateResponse{AutoPopulate: os.Getenv("GRAYMATTER_KG") == "1"}
-	g, err := kg.Open(d.store.DB())
+	g, err := kg.OpenRead(d.store.DB())
 	if err != nil {
-		return resp, nil // no graph yet: empty, not an error
+		if errors.Is(err, kg.ErrNoGraph) {
+			return resp, nil
+		}
+		return nil, err
 	}
 	nodes, err := g.AllNodes()
 	if err != nil {

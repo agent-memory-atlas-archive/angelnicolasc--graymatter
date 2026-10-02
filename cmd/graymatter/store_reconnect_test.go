@@ -74,8 +74,8 @@ func TestReconnectingStore_RecoversFromDeadConnection(t *testing.T) {
 	t.Cleanup(func() { reopenStore = prev })
 
 	rs := newReconnectingStore(dead)
-	if err := rs.Remember(context.Background(), "a", "b"); err != nil {
-		t.Fatalf("Remember should have recovered, got %v", err)
+	if _, err := rs.ListAgents(); err != nil {
+		t.Fatalf("ListAgents should have recovered, got %v", err)
 	}
 	if !dead.closed.Load() {
 		t.Error("the dead handle was not closed on reconnect")
@@ -113,7 +113,7 @@ func TestReconnectingStore_ReportsFailedReconnect(t *testing.T) {
 	t.Cleanup(func() { reopenStore = prev })
 
 	rs := newReconnectingStore(dead)
-	err := rs.Remember(context.Background(), "a", "b")
+	_, err := rs.ListAgents()
 	if err == nil {
 		t.Fatal("expected an error when the reconnect fails")
 	}
@@ -148,7 +148,7 @@ func TestReconnectingStore_ConcurrentRedial(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = rs.Remember(context.Background(), "a", "b")
+			_, errs[i] = rs.ListAgents()
 		}(i)
 	}
 	wg.Wait()

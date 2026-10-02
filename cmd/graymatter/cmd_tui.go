@@ -1,133 +1,155 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/harness"
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/kg"
+	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/session"
 	"github.com/angelnicolasc/graymatter/pkg/memory"
 )
-
-// Styles (palette, border styles, dashboard helpers) live in tui_styles.go.
-// Dashboard data loading + panel rendering live in tui_dashboard.go.
-
-// ── Tab definitions ───────────────────────────────────────────────────────────
 
 type tabID int
 
 const (
-	tabMemory   tabID = iota // 3-pane memory browser
-	tabSessions              // harness sessions list
-	tabGraph                 // knowledge graph nodes
-	tabStats                 // observability dashboard
+	tabMemory tabID = iota
+	tabRecall
+	tabSessions
+	tabGraph
+	tabUsage
+	tabStats
 )
 
-var tabNames = []string{"Memory", "Sessions", "Graph", "Stats"}
-
-// ── List item types ───────────────────────────────────────────────────────────
-
-// --- Memory tab ---
+var tabNames = []string{"Memory", "Recall", "Activity", "Graph", "Usage", "Status"}
 
 type agentItem struct {
 	id    string
 	count int
 }
 
-func (a agentItem) Title() string       { return a.id }
-func (a agentItem) Description() string { return fmt.Sprintf("%d facts", a.count) }
+func (a agentItem) Title() string       { return tuiPlain(a.id) }
+func (a agentItem) Description() string { return fmt.Sprintf("%d records", a.count) }
 func (a agentItem) FilterValue() string { return a.id }
 
 type factItem struct{ fact memory.Fact }
 
 func (f factItem) Title() string {
-	preview := truncateRunes(f.fact.Text, 72)
+	s := truncateRunes(strings.ReplaceAll(tuiPlain(f.fact.Text), "\n", " "), 180)
 	if f.fact.Pinned {
-		return "★ " + preview
+		return "★ " + s
 	}
-	return preview
+	return s
 }
 func (f factItem) Description() string {
-	if f.fact.Pinned {
-		return fmt.Sprintf("pinned · weight %.3f · %s", f.fact.Weight, f.fact.CreatedAt.Format("2006-01-02"))
-	}
-	return fmt.Sprintf("weight %.3f · %s", f.fact.Weight, f.fact.CreatedAt.Format("2006-01-02"))
+	return fmt.Sprintf("%s · %s · %s", factState(f.fact), confidenceLabel(f.fact), f.fact.CreatedAt.Format("Jan 02"))
 }
 func (f factItem) FilterValue() string { return f.fact.Text }
-
-// truncateRunes shortens s to at most max runes without splitting multi-byte
-// characters.
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
+func factState(f memory.Fact) string {
+	if f.IsSuperseded() {
+		if f.SupersededBy == memory.SupersededByAgent {
+			return "retired"
+		}
+		return "replaced"
 	}
-	return string(r[:max-3]) + "..."
+	if f.IsAlias() {
+		return "alias"
+	}
+	if f.Pinned {
+		return "pinned"
+	}
+	return "active"
+}
+func confidenceLabel(f memory.Fact) string {
+	return memory.EffectiveConfidence(f.Confidence)
 }
 
-// --- Sessions tab ---
+func confidenceDetail(raw string) string {
+	if raw == "" {
+		return "not declared (effective: inferred)"
+	}
+	if memory.ValidateConfidence(raw) == nil {
+		return raw + " (writer-declared)"
+	}
+	return fmt.Sprintf("%q (unknown label; effective: unverified)", tuiPlain(raw))
+}
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if n <= 0 {
+		return ""
+	}
+	if len(r) <= n {
+		return s
+	}
+	if n < 4 {
+		return string(r[:n])
+	}
+	return string(r[:n-3]) + "..."
+}
 
 type sessionItem struct{ s harness.HarnessSession }
 
-func (s sessionItem) Title() string {
-	age := ""
-	if !s.s.StartedAt.IsZero() {
-		age = " · " + time.Since(s.s.StartedAt).Truncate(time.Second).String() + " ago"
-	}
-	return s.s.AgentFile + age
-}
+func (s sessionItem) Title() string { return tuiPlain(s.s.AgentFile) }
 func (s sessionItem) Description() string {
-	st := statusStyle(s.s.Status)
-	return fmt.Sprintf("%s  %s", st, s.s.ID)
+	return statusStyle(s.s.Status) + " · " + s.s.StartedAt.Format("Jan 02 15:04")
 }
-func (s sessionItem) FilterValue() string { return s.s.ID + s.s.AgentFile }
-
-func statusStyle(status string) string {
-	switch status {
-	case "running":
-		return styleStatusOK.Render("● running")
-	case "success", "done": // the runner writes "done" for completed runs
-		return styleStatusOK.Render("✓ " + status)
+func (s sessionItem) FilterValue() string { return s.s.ID + " " + s.s.AgentID + " " + s.s.AgentFile }
+func statusStyle(s string) string {
+	switch s {
+	case "done", "success":
+		return "✓ " + s
 	case "failed", "killed":
-		return styleStatusFail.Render("✗ " + status)
+		return "✗ " + s
+	case "running":
+		return "● running"
 	default:
-		return styleStatusPending.Render("○ " + status)
+		return "○ " + tuiPlain(s)
 	}
 }
-
-// --- Graph tab ---
 
 type nodeItem struct{ n kg.Node }
 
-func (n nodeItem) Title() string { return n.n.Label + " [" + n.n.EntityType + "]" }
+func (n nodeItem) Title() string { return tuiPlain(n.n.Label) }
 func (n nodeItem) Description() string {
-	return fmt.Sprintf("id: %s · weight %.3f · seen %s",
-		n.n.ID[:min(12, len(n.n.ID))], n.n.Weight,
-		n.n.LastSeen.Format("2006-01-02"))
+	return tuiPlain(n.n.EntityType) + " · " + n.n.LastSeen.Format("Jan 02")
 }
 func (n nodeItem) FilterValue() string { return n.n.Label + " " + n.n.EntityType }
 
-// ── Messages ──────────────────────────────────────────────────────────────────
-
-type agentsLoadedMsg struct{ agents []agentItem }
-type factsLoadedMsg struct{ facts []factItem }
-type sessionsLoadedMsg struct{ sessions []sessionItem }
-type nodesLoadedMsg struct {
-	nodes   []nodeItem
-	edges   int
-	orphans int
+type receiptItem struct {
+	receipt memory.RecallReceipt
+	rank    int
 }
-type errMsg struct{ err error }
-type statusMsg struct{ text string }
 
-// ── Pane within memory tab ────────────────────────────────────────────────────
+func (r receiptItem) Title() string {
+	return fmt.Sprintf("%d  %s", r.rank, strings.ReplaceAll(tuiPlain(r.receipt.Text), "\n", " "))
+}
+func (r receiptItem) Description() string {
+	if r.receipt.Ranking != nil {
+		return fmt.Sprintf("Final %.5f · %s", r.receipt.Ranking.FinalScore, shortID(r.receipt.Provenance.FactID))
+	}
+	return fmt.Sprintf("RRF %.5f · %s", r.receipt.Ranks.FusedScore, shortID(r.receipt.Provenance.FactID))
+}
+func (r receiptItem) FilterValue() string { return r.receipt.Text }
+
+type checkpointItem struct{ cp session.Checkpoint }
+
+func (c checkpointItem) Title() string {
+	return c.cp.CreatedAt.Format("Jan 02 15:04:05") + " · " + shortID(c.cp.ID)
+}
+func (c checkpointItem) Description() string {
+	return fmt.Sprintf("%s · %d messages", tuiPlain(c.cp.AgentID), len(c.cp.Messages))
+}
+func (c checkpointItem) FilterValue() string { return c.cp.ID }
 
 type memPane int
 
@@ -137,590 +159,775 @@ const (
 	memPaneDetail
 )
 
-// ── Main model ────────────────────────────────────────────────────────────────
+type resourceState struct {
+	Loading    bool
+	Updated    time.Time
+	Err        error
+	Generation uint64
+}
+type agentsLoadedMsg struct {
+	agents     []agentItem
+	generation uint64
+}
+type factsLoadedMsg struct {
+	facts      []factItem
+	agent      string
+	generation uint64
+	next       string
+	total      int
+	appendPage bool
+}
+type sessionsLoadedMsg struct {
+	sessions   []sessionItem
+	generation uint64
+}
+type nodesLoadedMsg struct {
+	nodes      []nodeItem
+	edges      int
+	orphans    int
+	relations  []kg.Edge
+	generation uint64
+}
+type checkpointsLoadedMsg struct {
+	agent       string
+	generation  uint64
+	checkpoints []session.Checkpoint
+	err         error
+}
+type recallLoadedMsg struct {
+	agent, query string
+	generation   uint64
+	receipts     []memory.RecallReceipt
+	err          error
+}
+type mutationMsg struct {
+	action, agent string
+	fact          memory.Fact
+	err           error
+}
+type errMsg struct{ err error }
+type resourceErrMsg struct {
+	resource   string
+	generation uint64
+	err        error
+}
+type statusMsg struct{ text string }
+type healthLoadedMsg struct {
+	health     memory.InspectionHealth
+	err        error
+	generation uint64
+}
+type sourceFactMsg struct {
+	fact   memory.Fact
+	err    error
+	origin string
+}
+
+type inspectRecallStore interface {
+	InspectRecall(context.Context, string, string, int) ([]memory.RecallReceipt, error)
+}
+type curateFactStore interface {
+	CurateFact(context.Context, string, string, string, string, memory.Fact) (memory.Fact, error)
+}
+type factPageStore interface {
+	ListFacts(context.Context, string, string, string, string, int) (memory.FactPage, error)
+}
 
 type tuiModel struct {
-	store    cliStore
-	dataDir  string
-	readOnly bool // true when the store is in read-only mode (--no-daemon only)
+	ctx                                        context.Context
+	startup                                    tea.Cmd
+	demo                                       bool
+	store                                      cliStore
+	dataDir                                    string
+	readOnly                                   bool
+	activeTab                                  tabID
+	width, height                              int
+	layoutWidth, layoutHeight                  int
+	layoutTab                                  tabID
+	err                                        error // legacy/general connection error, independent resource errors live below
+	status                                     string
+	memPane                                    memPane
+	agentList, factList, sessionList, nodeList list.Model
+	detail                                     viewport.Model
+	kgEdgeCount, kgOrphans                     int
+	dashboard                                  dashboardData
 
-	// layout
-	activeTab tabID
-	width     int
-	height    int
-	err       error
-	status    string
-
-	// memory tab
-	memPane   memPane
-	agentList list.Model
-	factList  list.Model
-	detail    viewport.Model
-
-	// sessions tab
-	sessionList list.Model
-
-	// graph tab
-	nodeList    list.Model
-	nodeDetail  viewport.Model
-	kgEdgeCount int
-	kgOrphans   int
-
-	// stats tab (observability dashboard)
-	dashboard dashboardData
+	theme                      tuiTheme
+	themeName                  string
+	mouse                      bool
+	resources                  map[string]resourceState
+	namespace                  string
+	factMode                   string
+	factQuery                  string
+	nextFactCursor             string
+	factTotal                  int
+	factsGeneration            uint64
+	recallGeneration           uint64
+	checkpointGeneration       uint64
+	recallCancel               context.CancelFunc
+	recallList, checkpointList list.Model
+	recallQuery                string
+	input                      textinput.Model
+	editor                     textarea.Model
+	inputMode                  string // palette, filter, recall, namespace, graph-source
+	modal                      string // add, revise, retire, kill, help
+	modalFact                  memory.Fact
+	modalAgent, modalSession   string
+	busy                       bool
+	unknownMutation            string // memory or activity; cleared only by a successful refresh
+	unknownAgent               string
+	restoreFactID              string
+	paletteIndex               int
+	focus                      int
+	activityCheckpoints        bool
+	graphEdges                 []kg.Edge
+	previewID                  string
+	previewText                string
+	usage                      tuiUsageState
+	health                     memory.InspectionHealth
 }
 
-func (m tuiModel) Init() tea.Cmd {
-	return tea.Batch(
-		m.loadAgents(),
-		m.loadSessions(),
-		m.loadNodes(),
-		m.loadDashboard(),
-		dashboardTick(),
-	)
-}
-
-// ── Loaders ───────────────────────────────────────────────────────────────────
-
-func (m tuiModel) loadAgents() tea.Cmd {
-	return func() tea.Msg {
-		agents, err := m.store.ListAgents()
-		if err != nil {
-			return errMsg{err}
-		}
-		items := make([]agentItem, 0, len(agents))
-		for _, a := range agents {
-			// The agent came from ListAgents, so a failure here is the store
-			// going away rather than a missing agent. Dropping the error left
-			// the agent listed with a count of 0, which reads as "this agent
-			// remembers nothing".
-			st, err := m.store.Stats(a)
-			if err != nil {
-				return errMsg{err}
+func newTUIModel(store cliStore, dir string, readOnly bool, theme string, mouse bool) tuiModel {
+	nl := func(title string) list.Model {
+		l := list.New(nil, list.NewDefaultDelegate(), 40, 20)
+		l.Title = title
+		l.SetShowTitle(false)
+		l.SetShowStatusBar(false)
+		l.SetShowHelp(false)
+		l.SetShowPagination(false)
+		l.SetFilteringEnabled(false)
+		l.Filter = func(q string, targets []string) []list.Rank {
+			var ranks []list.Rank
+			for i, s := range targets {
+				if strings.Contains(strings.ToLower(s), strings.ToLower(q)) {
+					ranks = append(ranks, list.Rank{Index: i})
+				}
 			}
-			items = append(items, agentItem{id: a, count: st.FactCount})
+			return ranks
 		}
-		return agentsLoadedMsg{items}
+		l.DisableQuitKeybindings()
+		return l
+	}
+	m := tuiModel{store: store, dataDir: dir, readOnly: readOnly, themeName: theme, mouse: mouse, width: 100, height: 30, factMode: "active", resources: map[string]resourceState{}, agentList: nl("Namespaces"), factList: nl("Memory"), sessionList: nl("Runs"), nodeList: nl("Entities"), recallList: nl("Results"), checkpointList: nl("Checkpoints"), detail: viewport.New(), input: textinput.New(), editor: textarea.New()}
+	m.detail.SoftWrap = true
+	m.memPane = memPaneFacts
+	m.input.Prompt = "› "
+	m.input.CharLimit = 4096
+	m.editor.CharLimit = 200000
+	m.editor.ShowLineNumbers = false
+	m.setTheme(theme)
+	m.initUsage()
+	if d, ok := store.(interface{ Demo() bool }); ok && d.Demo() {
+		m.demo = true
+		m.usage.stateDir = dir
+	}
+	m.updateSizes()
+	return m
+}
+func (m tuiModel) Init() tea.Cmd {
+	if m.startup != nil {
+		return m.startup
+	}
+	return tea.Batch(m.loadAgents(), dashboardTick())
+}
+func (m tuiModel) commandContext() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
+}
+func (m *tuiModel) loadHealth() tea.Cmd {
+	g := m.startRequest("provider")
+	st, parent := m.store, m.commandContext()
+	return func() tea.Msg {
+		p, ok := st.(interface {
+			InspectHealth(context.Context) (memory.InspectionHealth, error)
+		})
+		if !ok {
+			return healthLoadedMsg{err: memory.ErrInspectionUnsupported, generation: g}
+		}
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		h, err := p.InspectHealth(ctx)
+		return healthLoadedMsg{h, err, g}
 	}
 }
+func (m *tuiModel) state(name string) resourceState {
+	if m.resources == nil {
+		m.resources = map[string]resourceState{}
+	}
+	return m.resources[name]
+}
+func (m *tuiModel) loading(name string) { r := m.state(name); r.Loading = true; m.resources[name] = r }
+func (m *tuiModel) startRequest(name string) uint64 {
+	r := m.state(name)
+	r.Loading = true
+	r.Generation++
+	m.resources[name] = r
+	return r.Generation
+}
+func (m *tuiModel) loaded(name string, err error) {
+	r := m.state(name)
+	r.Loading = false
+	r.Err = err
+	if err == nil {
+		r.Updated = time.Now()
+	}
+	m.resources[name] = r
+}
 
-func (m tuiModel) loadFacts(agentID string) tea.Cmd {
+func (m *tuiModel) loadAgents() tea.Cmd {
+	g := m.startRequest("namespaces")
+	st := m.store
 	return func() tea.Msg {
-		facts, err := m.store.List(agentID)
+		if st == nil {
+			return agentsLoadedMsg{generation: g}
+		}
+		ids, err := st.ListAgents()
 		if err != nil {
-			return errMsg{err}
+			return resourceErrMsg{"namespaces", g, err}
+		}
+		items := make([]agentItem, 0, len(ids))
+		for _, id := range ids {
+			s, e := st.Stats(id)
+			if e != nil {
+				return resourceErrMsg{"namespaces", g, e}
+			}
+			items = append(items, agentItem{id, s.FactCount})
+		}
+		return agentsLoadedMsg{items, g}
+	}
+}
+func (m *tuiModel) loadFacts(agent string) tea.Cmd { return m.loadFactPage(agent, "") }
+func (m *tuiModel) loadFactPage(agent, cursor string) tea.Cmd {
+	m.factsGeneration++
+	g := m.factsGeneration
+	m.loading("memory")
+	st, parent := m.store, m.commandContext()
+	mode, query := m.factMode, m.factQuery
+	if mode == "" {
+		mode = "active"
+	}
+	return func() tea.Msg {
+		var facts []memory.Fact
+		var err error
+		var next string
+		total := 0
+		if st == nil {
+			return factsLoadedMsg{agent: agent, generation: g}
+		}
+		if p, ok := st.(factPageStore); ok {
+			ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+			defer cancel()
+			var page memory.FactPage
+			page, err = p.ListFacts(ctx, agent, mode, query, cursor, 100)
+			facts, next, total = page.Facts, page.NextCursor, page.Total
+		} else {
+			facts, err = st.List(agent)
+			if err == nil {
+				filtered := facts[:0]
+				for _, f := range facts {
+					if matchFact(f, mode, query) {
+						filtered = append(filtered, f)
+					}
+				}
+				facts = filtered
+				total = len(facts)
+			}
+		}
+		if err != nil {
+			return resourceErrMsg{"memory", g, err}
 		}
 		items := make([]factItem, len(facts))
 		for i, f := range facts {
 			items[i] = factItem{f}
 		}
-		return factsLoadedMsg{items}
+		return factsLoadedMsg{facts: items, agent: agent, generation: g, next: next, total: total, appendPage: cursor != ""}
 	}
 }
-
-func (m tuiModel) loadSessions() tea.Cmd {
-	return func() tea.Msg {
-		sessions, err := m.store.SessionsList()
-		if err != nil {
-			// Was swallowed as "non-fatal", which rendered an empty list: the
-			// same picture a project with no sessions gives. An empty store
-			// does not error here, so reaching this really is a failure.
-			return errMsg{err}
+func matchFact(f memory.Fact, mode, query string) bool {
+	switch mode {
+	case "active":
+		if f.IsSuperseded() || f.IsAlias() {
+			return false
 		}
-		items := make([]sessionItem, len(sessions))
-		for i, s := range sessions {
+	case "retired":
+		if !f.IsSuperseded() {
+			return false
+		}
+	case "alias":
+		if !f.IsAlias() || f.IsSuperseded() {
+			return false
+		}
+	}
+	return strings.Contains(strings.ToLower(f.Text), strings.ToLower(query))
+}
+func (m *tuiModel) loadSessions() tea.Cmd {
+	g := m.startRequest("activity")
+	st := m.store
+	return func() tea.Msg {
+		if st == nil {
+			return sessionsLoadedMsg{generation: g}
+		}
+		ss, err := st.SessionsList()
+		if err != nil {
+			return resourceErrMsg{"activity", g, err}
+		}
+		items := make([]sessionItem, len(ss))
+		for i, s := range ss {
 			items[i] = sessionItem{s}
 		}
-		return sessionsLoadedMsg{items}
+		return sessionsLoadedMsg{items, g}
 	}
 }
-
-func (m tuiModel) loadNodes() tea.Cmd {
+func (m *tuiModel) loadNodes() tea.Cmd {
+	g := m.startRequest("graph")
+	st := m.store
 	return func() tea.Msg {
-		nodes, err := m.store.KGNodes()
-		if err != nil {
-			return errMsg{err}
+		if st == nil {
+			return nodesLoadedMsg{generation: g}
 		}
-		edges, _ := m.store.KGEdges()
+		ns, e := st.KGNodes()
+		if e != nil {
+			return resourceErrMsg{"graph", g, e}
+		}
+		es, e := st.KGEdges()
+		if e != nil {
+			return resourceErrMsg{"graph", g, e}
+		}
 		degree := map[string]int{}
-		for _, e := range edges {
+		for _, e := range es {
 			degree[e.From]++
 			degree[e.To]++
 		}
+		items := make([]nodeItem, len(ns))
 		orphans := 0
-		for _, n := range nodes {
+		for i, n := range ns {
+			items[i] = nodeItem{n}
 			if degree[n.ID] == 0 {
 				orphans++
 			}
 		}
-		items := make([]nodeItem, len(nodes))
-		for i, n := range nodes {
-			items[i] = nodeItem{n}
+		return nodesLoadedMsg{nodes: items, edges: len(es), orphans: orphans, relations: es, generation: g}
+	}
+}
+func (m *tuiModel) loadCheckpoints() tea.Cmd {
+	m.checkpointGeneration++
+	g, agent, st := m.checkpointGeneration, m.namespace, m.store
+	m.loading("checkpoints")
+	return func() tea.Msg {
+		if st == nil || agent == "" {
+			return checkpointsLoadedMsg{agent: agent, generation: g}
 		}
-		return nodesLoadedMsg{nodes: items, edges: len(edges), orphans: orphans}
+		c, e := st.CheckpointList(agent)
+		return checkpointsLoadedMsg{agent, g, c, e}
+	}
+}
+func (m *tuiModel) inspectRecall(query string) tea.Cmd {
+	if m.namespace == "" {
+		m.status = "Choose a namespace first (n)."
+		return nil
+	}
+	if m.recallCancel != nil {
+		m.recallCancel()
+	}
+	ctx, cancel := context.WithTimeout(m.commandContext(), 30*time.Second)
+	m.recallCancel = cancel
+	m.recallGeneration++
+	g, agent, st := m.recallGeneration, m.namespace, m.store
+	m.recallQuery = query
+	m.loading("recall")
+	return func() tea.Msg {
+		defer cancel()
+		p, ok := st.(inspectRecallStore)
+		if !ok {
+			return recallLoadedMsg{agent: agent, query: query, generation: g, err: fmt.Errorf("safe inspection unavailable; update the store daemon")}
+		}
+		rs, e := p.InspectRecall(ctx, agent, query, 8)
+		return recallLoadedMsg{agent, query, g, rs, e}
 	}
 }
 
-// ── Update ────────────────────────────────────────────────────────────────────
-
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-
+	if _, loaded := msg.(tuiUsageLoadedMsg); loaded {
+		cmds = append(cmds, m.updateUsage(msg))
+	}
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-
-		// Tab switching.
-		case "1":
-			m.activeTab = tabMemory
-		case "2":
-			m.activeTab = tabSessions
-		case "3":
-			m.activeTab = tabGraph
-		case "4":
-			m.activeTab = tabStats
-		case "tab":
-			m.activeTab = (m.activeTab + 1) % tabID(len(tabNames))
-		case "shift+tab":
-			m.activeTab = (m.activeTab + tabID(len(tabNames)) - 1) % tabID(len(tabNames))
-
-		default:
-			// Per-tab key handling.
-			switch m.activeTab {
-			case tabMemory:
-				cmds = append(cmds, m.updateMemoryKey(msg)...)
-			case tabSessions:
-				cmds = append(cmds, m.updateSessionsKey(msg)...)
-			case tabStats:
-				cmds = append(cmds, m.updateStatsKey(msg)...)
-			}
-		}
-
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		changed := m.width != msg.Width || m.height != msg.Height
+		m.width, m.height = msg.Width, msg.Height
 		m.updateSizes()
-
+		m.syncPreview(false)
+		if changed {
+			// Some terminal bridges retain cells from the old dimensions.
+			// Invalidate the renderer once per resize, never on regular frames.
+			cmds = append(cmds, tea.ClearScreen)
+		}
+	case tea.KeyPressMsg:
+		return m.handleKey(msg)
+	case tea.PasteMsg:
+		if m.modal == "add" || m.modal == "revise" {
+			var c tea.Cmd
+			m.editor, c = m.editor.Update(msg)
+			cmds = append(cmds, c)
+		} else if m.inputMode != "" {
+			var c tea.Cmd
+			m.input, c = m.input.Update(msg)
+			cmds = append(cmds, c)
+		}
+	case tea.MouseClickMsg:
+		if m.mouse && m.modal == "" && m.inputMode == "" {
+			cmds = append(cmds, m.handleMouse(msg))
+		}
+	case tea.MouseWheelMsg:
+		if m.mouse && m.modal == "" && m.inputMode == "" {
+			if m.activeTab == tabUsage {
+				return m, m.updateUsage(msg)
+			}
+			if m.focus == 1 || m.memPane == memPaneDetail {
+				var c tea.Cmd
+				m.detail, c = m.detail.Update(msg)
+				cmds = append(cmds, c)
+			} else {
+				cmds = append(cmds, m.moveList(msg))
+				if m.activeTab == tabMemory && m.memPane == memPaneAgents {
+					if s, ok := m.agentList.SelectedItem().(agentItem); ok && s.id != m.namespace {
+						cmds = append(cmds, m.chooseNamespace(s.id))
+					}
+				}
+			}
+			m.syncPreview(false)
+		}
 	case agentsLoadedMsg:
-		// A load that got through means whatever went wrong before is over.
-		// Without this the error would outlive its cause: nothing else clears
-		// it, so one hiccup used to leave the UI stuck on an error screen for
-		// the rest of the session.
+		if msg.generation < m.state("namespaces").Generation {
+			break
+		}
 		m.err = nil
+		m.loaded("namespaces", nil)
+		old := m.namespace
 		items := make([]list.Item, len(msg.agents))
 		for i, a := range msg.agents {
 			items[i] = a
 		}
 		m.agentList.SetItems(items)
-
+		for i, a := range msg.agents {
+			if a.id == old {
+				m.agentList.Select(i)
+			}
+		}
+		if sel, ok := m.agentList.SelectedItem().(agentItem); ok {
+			if m.namespace == "" {
+				// Prefer a project namespace over shared defaults on first open.
+				for i, a := range msg.agents {
+					if a.id != "__shared__" {
+						m.agentList.Select(i)
+						sel = a
+						break
+					}
+				}
+				cmds = append(cmds, m.chooseNamespace(sel.id))
+			}
+		}
+		if old != "" && !m.state("memory").Loading && m.state("memory").Updated.IsZero() {
+			cmds = append(cmds, m.chooseNamespace(old))
+		}
 	case factsLoadedMsg:
-		m.err = nil
-		items := make([]list.Item, len(msg.facts))
-		for i, f := range msg.facts {
-			items[i] = f
+		if msg.generation < m.factsGeneration || (m.namespace != "" && msg.agent != "" && msg.agent != m.namespace) {
+			break
+		}
+		m.factsGeneration = msg.generation
+		m.loaded("memory", nil)
+		old := m.selectedFactID()
+		if old == "" {
+			old = m.restoreFactID
+		}
+		items := []list.Item{}
+		if msg.appendPage {
+			items = append(items, m.factList.Items()...)
+		}
+		for _, f := range msg.facts {
+			items = append(items, f)
 		}
 		m.factList.SetItems(items)
-
+		for i, item := range items {
+			if item.(factItem).fact.ID == old {
+				m.factList.Select(i)
+			}
+		}
+		m.nextFactCursor = msg.next
+		m.factTotal = msg.total
+		m.restoreFactID = ""
+		if m.unknownMutation == "memory" && msg.agent == m.unknownAgent {
+			m.unknownMutation = ""
+			m.status = "Refreshed. Inspect the result before deciding whether to repeat the action."
+		}
+		m.syncPreview(false)
 	case sessionsLoadedMsg:
+		if msg.generation < m.state("activity").Generation {
+			break
+		}
+		m.loaded("activity", nil)
+		if m.unknownMutation == "activity" {
+			m.unknownMutation = ""
+			m.status = "Refreshed. Inspect the run before deciding whether to stop it again."
+		}
+		old := ""
+		if s, ok := m.sessionList.SelectedItem().(sessionItem); ok {
+			old = s.s.ID
+		}
 		items := make([]list.Item, len(msg.sessions))
 		for i, s := range msg.sessions {
 			items[i] = s
 		}
-		m.sessionList.SetItems(items)
-
+		setListItems(&m.sessionList, items)
+		selectVisible(&m.sessionList, func(it list.Item) bool { return it.(sessionItem).s.ID == old })
+		m.syncPreview(false)
 	case nodesLoadedMsg:
+		if msg.generation < m.state("graph").Generation {
+			break
+		}
+		m.loaded("graph", nil)
+		old := ""
+		if n, ok := m.nodeList.SelectedItem().(nodeItem); ok {
+			old = n.n.ID
+		}
 		items := make([]list.Item, len(msg.nodes))
 		for i, n := range msg.nodes {
 			items[i] = n
 		}
-		m.nodeList.SetItems(items)
-		m.kgEdgeCount = msg.edges
-		m.kgOrphans = msg.orphans
-		if sel, ok := m.nodeList.SelectedItem().(nodeItem); ok {
-			m.nodeDetail.SetContent(formatNodeDetail(sel.n))
+		setListItems(&m.nodeList, items)
+		selectVisible(&m.nodeList, func(it list.Item) bool { return it.(nodeItem).n.ID == old })
+		m.graphEdges = msg.relations
+		m.kgEdgeCount, m.kgOrphans = msg.edges, msg.orphans
+		m.syncPreview(false)
+	case checkpointsLoadedMsg:
+		if msg.generation != m.checkpointGeneration || msg.agent != m.namespace {
+			break
 		}
-
-	case dashboardLoadedMsg:
-		m.dashboard = msg.data
-		if msg.data.Err == nil {
-			m.err = nil
+		m.loaded("checkpoints", msg.err)
+		if msg.err == nil {
+			items := make([]list.Item, len(msg.checkpoints))
+			for i, c := range msg.checkpoints {
+				items[i] = checkpointItem{c}
+			}
+			setListItems(&m.checkpointList, items)
+			m.syncPreview(false)
 		}
-
-	case dashboardTickMsg:
-		// Refresh the dashboard periodically and re-arm the ticker.
-		cmds = append(cmds, m.loadDashboard(), dashboardTick())
-
+	case recallLoadedMsg:
+		if msg.generation != m.recallGeneration || msg.agent != m.namespace {
+			break
+		}
+		m.loaded("recall", msg.err)
+		if msg.err == nil {
+			items := make([]list.Item, len(msg.receipts))
+			for i, r := range msg.receipts {
+				items[i] = receiptItem{r, i + 1}
+			}
+			m.recallList.SetItems(items)
+			m.focus = 0
+			m.syncPreview(true)
+		}
+	case resourceErrMsg:
+		if msg.resource == "memory" && msg.generation < m.factsGeneration {
+			break
+		}
+		if msg.generation < m.state(msg.resource).Generation {
+			break
+		}
+		m.loaded(msg.resource, msg.err)
+		if msg.resource == "namespaces" {
+			m.err = msg.err
+		}
+	case healthLoadedMsg:
+		if msg.generation < m.state("provider").Generation {
+			break
+		}
+		m.loaded("provider", msg.err)
+		if msg.err == nil {
+			m.health = msg.health
+		}
+		m.syncPreview(false)
 	case errMsg:
 		m.err = msg.err
-
+		m.loaded("namespaces", msg.err)
 	case statusMsg:
 		m.status = msg.text
-	}
-
-	// Delegate remaining events to active tab's focused widget.
-	switch m.activeTab {
-	case tabMemory:
-		var cmd tea.Cmd
-		switch m.memPane {
-		case memPaneAgents:
-			m.agentList, cmd = m.agentList.Update(msg)
-		case memPaneFacts:
-			m.factList, cmd = m.factList.Update(msg)
-		case memPaneDetail:
-			m.detail, cmd = m.detail.Update(msg)
+	case copyResultMsg:
+		if msg.err == nil {
+			m.status = "Copied to system clipboard"
+		} else {
+			m.status = "Terminal copy requested (OSC52); use the inspector if unsupported"
+			cmds = append(cmds, tea.SetClipboard(msg.text))
 		}
-		cmds = append(cmds, cmd)
-	case tabSessions:
-		var cmd tea.Cmd
-		m.sessionList, cmd = m.sessionList.Update(msg)
-		cmds = append(cmds, cmd)
-	case tabGraph:
-		var cmd1, cmd2 tea.Cmd
-		m.nodeList, cmd1 = m.nodeList.Update(msg)
-		m.nodeDetail, cmd2 = m.nodeDetail.Update(msg)
-		// Keep the detail pane in sync with the highlighted node.
-		if _, isKey := msg.(tea.KeyMsg); isKey {
-			if sel, ok := m.nodeList.SelectedItem().(nodeItem); ok {
-				m.nodeDetail.SetContent(formatNodeDetail(sel.n))
+	case mutationMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = "Action failed: " + tuiPlain(msg.err.Error())
+			if errors.Is(msg.err, memory.ErrMutationOutcomeUnknown) {
+				m.modal = ""
+				m.unknownMutation, m.unknownAgent = "memory", msg.agent
+				if msg.action == "Stop run" {
+					m.unknownMutation = "activity"
+				}
+				m.status = "Outcome unknown. Refresh and inspect the result before another action."
+				if msg.agent != "" {
+					m.status = "Outcome unknown in " + tuiPlain(msg.agent) + ". Refresh that namespace and inspect before another action."
+				}
+			}
+		} else {
+			m.modal = ""
+			m.status = msg.action + " confirmed"
+			if msg.agent == m.namespace {
+				cmds = append(cmds, m.loadFacts(m.namespace))
+			}
+			cmds = append(cmds, m.loadAgents())
+			if msg.action == "Stop run" {
+				cmds = append(cmds, m.loadSessions())
 			}
 		}
-		cmds = append(cmds, cmd1, cmd2)
+	case sourceFactMsg:
+		if msg.origin != "" {
+			n, ok := m.nodeList.SelectedItem().(nodeItem)
+			if m.activeTab != tabGraph || !ok || n.n.ID != msg.origin {
+				break
+			}
+		}
+		if msg.err != nil {
+			m.status = msg.err.Error()
+		} else {
+			m.activeTab = tabMemory
+			m.recallGeneration++
+			m.checkpointGeneration++
+			m.recallList.SetItems(nil)
+			m.checkpointList.SetItems(nil)
+			m.namespace = msg.fact.AgentID
+			m.factMode = "all"
+			m.factQuery = ""
+			m.factList.SetItems([]list.Item{factItem{msg.fact}})
+			m.factsGeneration++
+			m.factTotal, m.nextFactCursor = 1, ""
+			m.loaded("memory", nil)
+			selectVisible(&m.agentList, func(it list.Item) bool { return it.(agentItem).id == msg.fact.AgentID })
+			m.memPane = memPaneDetail
+			m.focus = 1
+			m.syncPreview(true)
+			m.status = "Source fact · " + msg.fact.ID
+		}
+	case dashboardLoadedMsg:
+		if msg.generation < m.state("status").Generation {
+			break
+		}
+		if msg.data.Err != nil && m.dashboard.Loaded && m.dashboard.Err == nil {
+			m.loaded("status", msg.data.Err)
+		} else {
+			m.dashboard = msg.data
+			m.loaded("status", msg.data.Err)
+		}
+		m.syncPreview(false)
+	case dashboardTickMsg:
+		if m.activeTab == tabStats && !m.state("status").Loading {
+			m.loading("status")
+			cmds = append(cmds, m.loadDashboard())
+		}
+		cmds = append(cmds, dashboardTick())
+	default:
+		if m.modal == "add" || m.modal == "revise" {
+			var c tea.Cmd
+			m.editor, c = m.editor.Update(msg)
+			cmds = append(cmds, c)
+		} else if m.inputMode != "" {
+			var c tea.Cmd
+			m.input, c = m.input.Update(msg)
+			cmds = append(cmds, c)
+		}
 	}
-
 	return m, tea.Batch(cmds...)
 }
 
-func (m *tuiModel) updateMemoryKey(msg tea.KeyMsg) []tea.Cmd {
-	switch msg.String() {
-	case "right", "l":
-		if m.memPane < memPaneDetail {
-			m.memPane++
+func (m *tuiModel) chooseNamespace(agent string) tea.Cmd {
+	if m.namespace != agent {
+		m.factList.SetItems(nil)
+		m.recallList.SetItems(nil)
+		m.checkpointList.SetItems(nil)
+		m.detail.SetContent("")
+		m.previewText = ""
+		m.nextFactCursor, m.factTotal = "", 0
+		m.restoreFactID = ""
+		for _, resource := range []string{"memory", "recall", "checkpoints"} {
+			m.resources[resource] = resourceState{}
 		}
-	case "left", "h":
-		if m.memPane > memPaneAgents {
-			m.memPane--
+		m.recallGeneration++
+		if m.recallCancel != nil {
+			m.recallCancel()
 		}
-	case "enter":
-		if m.memPane == memPaneAgents {
-			if sel, ok := m.agentList.SelectedItem().(agentItem); ok {
-				m.memPane = memPaneFacts
-				return []tea.Cmd{m.loadFacts(sel.id)}
-			}
-		} else if m.memPane == memPaneFacts {
-			m.memPane = memPaneDetail
-			if sel, ok := m.factList.SelectedItem().(factItem); ok {
-				m.detail.SetContent(formatFactDetail(sel.fact))
-			}
-		}
-	case "d":
-		if m.readOnly {
-			m.status = "read-only: cannot delete facts while another process holds the store"
-			return nil
-		}
-		if m.memPane == memPaneFacts {
-			if sel, ok := m.factList.SelectedItem().(factItem); ok {
-				if agSel, ok2 := m.agentList.SelectedItem().(agentItem); ok2 {
-					_ = m.store.Delete(agSel.id, sel.fact.ID)
-					m.status = "Deleted fact " + sel.fact.ID[:8]
-					return []tea.Cmd{m.loadFacts(agSel.id), m.loadDashboard()}
-				}
-			}
-		}
-	case "r":
-		return []tea.Cmd{m.loadAgents(), m.loadDashboard()}
 	}
-	return nil
+	m.namespace = agent
+	selectVisible(&m.agentList, func(it list.Item) bool { return it.(agentItem).id == agent })
+	m.previewID = ""
+	if m.activeTab == tabSessions {
+		return tea.Batch(m.loadFacts(agent), m.loadCheckpoints())
+	}
+	return m.loadFacts(agent)
 }
-
-func (m *tuiModel) updateSessionsKey(msg tea.KeyMsg) []tea.Cmd {
-	switch msg.String() {
-	case "r":
-		return []tea.Cmd{m.loadSessions()}
-	case "k":
-		if m.readOnly {
-			m.status = "read-only: cannot kill sessions while another process holds the store"
-			return nil
-		}
-		if sel, ok := m.sessionList.SelectedItem().(sessionItem); ok {
-			if err := m.store.SessionKill(sel.s.ID); err != nil {
-				m.status = "kill: " + err.Error()
-			} else {
-				m.status = "Killed " + sel.s.ID[:8]
-				return []tea.Cmd{m.loadSessions()}
-			}
-		}
-	}
-	return nil
-}
-
-func (m *tuiModel) updateStatsKey(msg tea.KeyMsg) []tea.Cmd {
-	if msg.String() == "r" {
-		return []tea.Cmd{m.loadDashboard()}
-	}
-	return nil
-}
-
-// ── View ──────────────────────────────────────────────────────────────────────
-
-// View renders the dashboard. An error no longer replaces it.
-//
-// The old behaviour swapped the entire UI for "Error: ... Press q to quit." and
-// nothing ever cleared it, so a single transient failure ended the session even
-// though the store recovered a moment later. Errors now ride in the header
-// while the rest of the UI stays usable and `r` keeps working.
-func (m tuiModel) View() string {
-	header := m.renderHeader()
-	body := m.renderBody()
-	footer := m.renderFooter()
-
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
-}
-
-// truncateErr keeps an error readable inside the header chip. The full text is
-// not lost: the failing view says what is unavailable, and the daemon logs the
-// underlying cause.
-func truncateErr(err error) string {
-	const max = 48
-	s := err.Error()
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-1] + "…"
-}
-
-func (m tuiModel) renderHeader() string {
-	logo := styleLogo.Render(" GRAYMATTER ")
-
-	tabs := make([]string, len(tabNames))
-	for i, name := range tabNames {
-		label := fmt.Sprintf("[%d] %s", i+1, name)
-		if tabID(i) == m.activeTab {
-			tabs[i] = styleTabActive.Render("▸ " + name + " ")
-			_ = label
-		} else {
-			tabs[i] = styleTabInactive.Render(label)
-		}
-	}
-	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-
-	// Right side: version + clock + optional status.
-	ver := styleVersion.Render("v" + version)
-	clock := styleDimText.Render("· " + time.Now().Format("15:04"))
-	right := lipgloss.JoinHorizontal(lipgloss.Top, ver, clock)
-
-	// Optional status chip (e.g. after delete/kill).
-	statusChip := ""
-	// An error outranks a status message: it is why the numbers below may be
-	// stale, and hiding it is what made a dead connection look like an empty
-	// store.
-	if m.err != nil {
-		statusChip = "  " + styleStatusFail.Render("⚠ "+truncateErr(m.err))
-	} else if m.status != "" {
-		statusChip = "  " + styleSubText.Render("· "+m.status)
-	}
-
-	// Read-only badge: shown when the store is locked by another process.
-	roBadge := ""
-	if m.readOnly {
-		roBadge = "  " + styleStatusFail.Render("⊘ read-only")
-	}
-
-	left := lipgloss.JoinHorizontal(lipgloss.Top, logo, " ", tabBar, statusChip, roBadge)
-
-	// Justify left/right across full width.
-	leftW := lipgloss.Width(left)
-	rightW := lipgloss.Width(right)
-	gap := m.width - leftW - rightW
-	if gap < 1 {
-		gap = 1
-	}
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right)
-
-	// Thin separator line below the header.
-	sep := lipgloss.NewStyle().Foreground(colorSlate).Render(
-		strings.Repeat("─", max(1, m.width)))
-
-	return lipgloss.JoinVertical(lipgloss.Left, bar, sep)
-}
-
-func (m tuiModel) renderBody() string {
-	bodyH := m.height - 4 // header (2) + footer (1) + spacing
-	if bodyH < 5 {
-		bodyH = 5
-	}
-	switch m.activeTab {
+func (m *tuiModel) switchTab(t tabID) tea.Cmd {
+	m.activeTab = t
+	m.focus = 0
+	m.memPane = memPaneFacts
+	m.previewID = ""
+	m.syncPreview(true)
+	switch t {
 	case tabMemory:
-		return m.renderMemory(bodyH)
+		if m.namespace != "" && !m.state("memory").Loading {
+			return m.loadFacts(m.namespace)
+		}
 	case tabSessions:
-		return m.renderSessions(bodyH)
+		return tea.Batch(m.loadSessions(), m.loadCheckpoints())
 	case tabGraph:
-		return m.renderGraph(bodyH)
+		return m.loadNodes()
+	case tabUsage:
+		return m.loadUsage()
 	case tabStats:
-		return m.renderDashboard(bodyH)
+		m.loading("status")
+		return tea.Batch(m.loadDashboard(), m.loadHealth())
+	}
+	return nil
+}
+func (m *tuiModel) refresh() tea.Cmd {
+	switch m.activeTab {
+	case tabRecall:
+		if strings.TrimSpace(m.recallQuery) == "" {
+			m.status = "Enter a query first (Enter)."
+			return nil
+		}
+		return m.inspectRecall(m.recallQuery)
+	case tabMemory:
+		return tea.Batch(m.loadAgents(), m.loadFacts(m.namespace))
+	case tabSessions:
+		return tea.Batch(m.loadSessions(), m.loadCheckpoints())
+	case tabGraph:
+		return m.loadNodes()
+	case tabStats:
+		m.loading("status")
+		return tea.Batch(m.loadDashboard(), m.loadHealth())
+	case tabUsage:
+		return m.refreshUsage()
+	}
+	return nil
+}
+func (m tuiModel) selectedFactID() string {
+	if f, ok := m.factList.SelectedItem().(factItem); ok {
+		return f.fact.ID
 	}
 	return ""
 }
-
-func (m tuiModel) renderFooter() string {
-	k := styleHelpKey.Render
-	sep := "  " + styleHelpSep.Render("│") + "  "
-
-	var groups []string
-	switch m.activeTab {
-	case tabMemory:
-		mutKeys := k("d") + " " + styleDimText.Render("delete") + "  "
-		if m.readOnly {
-			mutKeys = styleStatusFail.Render("d") + " " + styleDimText.Render("(read-only)") + "  "
-		}
-		groups = []string{
-			k("j/k") + " " + styleDimText.Render("nav") + "  " +
-				k("←/→") + " " + styleDimText.Render("pane"),
-			k("enter") + " " + styleDimText.Render("select") + "  " +
-				mutKeys +
-				k("r") + " " + styleDimText.Render("refresh"),
-			k("1-4") + " " + styleDimText.Render("tabs") + "  " +
-				k("q") + " " + styleDimText.Render("quit"),
-		}
-	case tabSessions:
-		killKey := k("k") + " " + styleDimText.Render("kill") + "  "
-		if m.readOnly {
-			killKey = styleStatusFail.Render("k") + " " + styleDimText.Render("(read-only)") + "  "
-		}
-		groups = []string{
-			k("j/k") + " " + styleDimText.Render("nav"),
-			killKey +
-				k("r") + " " + styleDimText.Render("refresh"),
-			k("1-4") + " " + styleDimText.Render("tabs") + "  " +
-				k("q") + " " + styleDimText.Render("quit"),
-		}
-	case tabGraph:
-		groups = []string{
-			k("j/k") + " " + styleDimText.Render("nav"),
-			k("1-4") + " " + styleDimText.Render("tabs") + "  " +
-				k("q") + " " + styleDimText.Render("quit"),
-		}
-	case tabStats:
-		groups = []string{
-			k("r") + " " + styleDimText.Render("refresh") + "  " +
-				styleDimText.Render("(auto every 5s)"),
-			k("1-4") + " " + styleDimText.Render("tabs") + "  " +
-				k("q") + " " + styleDimText.Render("quit"),
-		}
-	}
-	return styleHelp.Render(strings.Join(groups, sep))
-}
-
-// ── Memory tab ────────────────────────────────────────────────────────────────
-
-func (m tuiModel) renderMemory(h int) string {
-	colW := m.width / 3
-
-	agentPane := border(m.memPane == memPaneAgents).
-		Width(colW - 2).Height(h - 2).Render(m.agentList.View())
-	factPane := border(m.memPane == memPaneFacts).
-		Width(colW - 2).Height(h - 2).Render(m.factList.View())
-	detailPane := border(m.memPane == memPaneDetail).
-		Width(m.width - colW*2 - 6).Height(h - 2).Render(m.detail.View())
-
-	return lipgloss.JoinHorizontal(lipgloss.Top, agentPane, factPane, detailPane)
-}
-
-// ── Sessions tab ──────────────────────────────────────────────────────────────
-
-func (m tuiModel) renderSessions(h int) string {
-	return styleBorderInactive.Width(m.width - 4).Height(h - 2).Render(m.sessionList.View())
-}
-
-// ── Graph tab ─────────────────────────────────────────────────────────────────
-
-func (m tuiModel) renderGraph(h int) string {
-	if len(m.nodeList.Items()) == 0 {
-		return styleBorderInactive.Width(m.width - 4).Height(h - 2).
-			Render(styleDimText.Render("\n  Knowledge graph empty.\n  Run `graymatter init`, store some memories, and enable auto-population with `graymatter daemon run --kg`\n  (or add explicit edges via `memory_reflect action=link`)."))
-	}
-	leftW := m.width * 2 / 5
-	stats := styleDimText.Render(fmt.Sprintf(
-		"  entities: %d · edges: %d · orphans: %d",
-		len(m.nodeList.Items()), m.kgEdgeCount, m.kgOrphans))
-	// The stats block costs 5 screen rows (3 content + 2 border). The panes
-	// must discount them or the tab overflows the viewport and pushes the
-	// header off screen — h-7 content + 2 border + 5 = h, an exact fit.
-	header := styleBorderInactive.Width(m.width - 4).Height(3).Render(stats)
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		styleBorderInactive.Width(leftW-2).Height(h-7).Render(m.nodeList.View()),
-		styleBorderInactive.Width(m.width-leftW-4).Height(h-7).Render(m.nodeDetail.View()))
-	return lipgloss.JoinVertical(lipgloss.Left, header, body)
-}
-
-// ── Size management ───────────────────────────────────────────────────────────
-
-func (m *tuiModel) updateSizes() {
-	bodyH := m.height - 4
-	if bodyH < 5 {
-		bodyH = 5
-	}
-	listH := bodyH - 4
-	if listH < 3 {
-		listH = 3
-	}
-
-	colW := m.width / 3
-	m.agentList.SetSize(colW-4, listH)
-	m.factList.SetSize(colW-4, listH)
-	m.detail.Width = m.width - colW*2 - 8
-	m.detail.Height = listH
-
-	m.sessionList.SetSize(m.width-6, listH)
-
-	leftW := m.width * 2 / 5
-	// Graph-tab panes sit under a 5-row stats header the other tabs don't
-	// have, so their lists get 3 rows less than the shared listH (see
-	// renderGraph for the arithmetic).
-	m.nodeList.SetSize(leftW-4, listH-3)
-	m.nodeDetail.Width = m.width - leftW - 6
-	m.nodeDetail.Height = listH - 3
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-func formatNodeDetail(n kg.Node) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Entity:  %s\n", n.Label))
-	sb.WriteString(fmt.Sprintf("Type:    %s\n", n.EntityType))
-	sb.WriteString(fmt.Sprintf("ID:      %s\n", n.ID))
-	sb.WriteString(fmt.Sprintf("Weight:  %.4f\n", n.Weight))
-	sb.WriteString(fmt.Sprintf("First:   %s\n", n.FirstSeen.Format("2006-01-02 15:04")))
-	sb.WriteString(fmt.Sprintf("Last:    %s\n", n.LastSeen.Format("2006-01-02 15:04")))
-	return sb.String()
-}
-func formatFactDetail(f memory.Fact) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("ID:      %s\n", f.ID))
-	sb.WriteString(fmt.Sprintf("Agent:   %s\n", f.AgentID))
-	sb.WriteString(fmt.Sprintf("Created: %s\n", f.CreatedAt.Format("2006-01-02 15:04:05")))
-	sb.WriteString(fmt.Sprintf("Weight:  %.4f\n", f.Weight))
-	sb.WriteString(fmt.Sprintf("Access:  %d times\n", f.AccessCount))
-	if f.Pinned {
-		sb.WriteString(fmt.Sprintf("Pinned:  yes (exempt from decay, pruning, summarisation)\n"))
-	}
-	if f.Confidence != "" {
-		sb.WriteString(fmt.Sprintf("Confidence: %s\n", f.Confidence))
-	}
-	sb.WriteString("\n─── Text ────────────────────────────\n\n")
-	sb.WriteString(f.Text)
-	sb.WriteString("\n")
-	return sb.String()
-}
-
+func shortID(s string) string { return truncateRunes(s, 14) }
 func min(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
 }
-
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -728,65 +935,43 @@ func max(a, b int) int {
 	return b
 }
 
-// ── Command wiring ─────────────────────────────────────────────────────────────
-
 func tuiCmd() *cobra.Command {
-	var forceReadOnly bool
-
-	cmd := &cobra.Command{
-		Use:   "tui",
-		Short: "Observability dashboard for GrayMatter",
-		Long: `Interactive 4-view terminal UI for GrayMatter.
-
-Views (switch with 1-4 or tab/shift+tab):
-  1. Memory   — browse agents, facts, and full fact detail
-  2. Sessions — view and kill managed agent sessions
-  3. Graph    — browse knowledge graph nodes and edges
-  4. Stats    — observability dashboard (KPIs, agent activity, weight distribution, 30d sparkline)
-
-By default the TUI connects to the store daemon, so it runs fine alongside an
-MCP server, opencode, or another TUI. --read-only applies only with --no-daemon
-(direct in-process open), where it forces a non-mutating open.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// --read-only only makes sense for the direct (--no-daemon) path;
-			// through the daemon every client is a full read/write peer.
-			if forceReadOnly {
-				noDaemon = true
-			}
-
-			store, err := openStore()
-			if err != nil {
-				return err
-			}
-			defer func() { _ = store.Close() }()
-
-			newList := func(title string) list.Model {
-				l := list.New(nil, list.NewDefaultDelegate(), 40, 20)
-				l.Title = title
-				l.SetShowStatusBar(false)
-				l.SetFilteringEnabled(true)
-				return l
-			}
-
-			m := tuiModel{
-				store:       store,
-				dataDir:     dataDir,
-				readOnly:    store.IsReadOnly(),
-				agentList:   newList("Agents"),
-				factList:    newList("Facts"),
-				sessionList: newList("Sessions"),
-				nodeList:    newList("KG Nodes"),
-				detail:      viewport.New(40, 20),
-				nodeDetail:  viewport.New(40, 20),
-			}
-
-			p := tea.NewProgram(m, tea.WithAltScreen())
-			_, err = p.Run()
+	var readOnly, mouse bool
+	var theme string
+	cmd := &cobra.Command{Use: "tui", Short: "Explore, inspect and curate agent memory", Long: "Interactive memory workbench: Memory, Recall, Activity, Graph, Usage and Status.\nUse / or Ctrl+K for commands, f to filter, n to choose a namespace.\nRecall inspection does not touch access counts. Retiring preserves history.", RunE: func(cmd *cobra.Command, args []string) error {
+		if theme != "" && theme != "dark" && theme != "light" && theme != "terminal" {
+			return fmt.Errorf("theme must be dark, light, or terminal")
+		}
+		store, err := openTUIStore(readOnly)
+		if err != nil {
 			return err
-		},
-	}
-
-	cmd.Flags().BoolVar(&forceReadOnly, "read-only", false,
-		"with --no-daemon: open the store read-only (skips all mutating operations)")
+		}
+		defer store.Close()
+		return runTUI(cmd.Context(), store, dataDir, readOnly || store.IsReadOnly(), theme, mouse)
+	}}
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "disable mutations for this TUI session")
+	cmd.Flags().BoolVar(&mouse, "mouse", false, "enable mouse navigation (off preserves terminal selection)")
+	cmd.Flags().StringVar(&theme, "theme", "", "dark, light, or terminal (default: saved preference, then dark)")
 	return cmd
+}
+
+// runTUI borrows the store; the caller retains ownership and closes it.
+func runTUI(parent context.Context, store cliStore, dir string, readOnly bool, theme string, mouse bool) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	m := newTUIModel(store, dir, readOnly, theme, mouse)
+	m.ctx = ctx
+	prefsPath := ""
+	if !m.demo {
+		prefsPath = tuiPreferencesPath(dir)
+		m.restorePreferences(prefsPath, theme)
+	}
+	m.startup = tea.Batch(m.loadAgents(), m.loadUsage(), dashboardTick())
+	result, err := tea.NewProgram(m, tea.WithContext(ctx)).Run()
+	if err == nil && prefsPath != "" {
+		if final, ok := result.(tuiModel); ok {
+			err = final.savePreferences(prefsPath)
+		}
+	}
+	return err
 }

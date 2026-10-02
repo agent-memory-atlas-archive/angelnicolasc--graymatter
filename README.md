@@ -104,26 +104,30 @@ scripts/kg-timelapse.sh    # deterministic corpus -> frames -> GIF
 
 You can't improve what you can't see.
 
-`graymatter tui` opens a live terminal dashboard with everything your
-agent memory is doing — no extra setup required.
+`graymatter tui` opens a memory workbench with six views:
 
-<p align="center">
-  <img src=".github/assets/tui-tour.gif" alt="GrayMatter-TUI" width="900px" style="max-width: 900px;">
-</p>
+| View | Purpose |
+|---|---|
+| **Memory** | Browse namespaces, filter active/retired/alias facts, inspect provenance, add, revise, retire and pin exact facts |
+| **Recall** | Inspect ranking receipts without incrementing access counts or learning aliases |
+| **Activity** | Inspect harness runs and checkpoints; confirm before stopping a running session |
+| **Graph** | Follow connected entities and open recorded supporting facts |
+| **Usage** | Switch between subscription limits and API spend, with separate session context and source status |
+| **Status** | Inspect memory aggregates, embedding observations and configured providers |
 
-**What you get at a glance:**
+Press `1–6` to switch views, `/` for the command palette, `n` for namespaces,
+`f` to filter, `Tab` to move focus, and `?` for contextual controls. Memory opens
+first. Narrow terminals show one pane at a time; larger terminals show the list
+and inspector together. `--theme dark|light|terminal` and optional `--mouse`
+adapt the workbench to your terminal. `--read-only` prevents memory and session
+mutations; it requires an existing store and either a running daemon or explicit
+`--no-daemon`.
 
-- **Facts** — total stored, distributed across agents
-- **Memory cost** — KB on disk (text + embeddings), not tokens
-- **Recalls** — cumulative access count across all sessions
-- **Health** — percentage of facts above relevance threshold (weight > 0.5)
-- **Token cost (30d)** — real spend breakdown by model, with cache hit rate
-- **Agent activity** — facts vs recalls per agent, side by side
-- **Weight distribution** — how consolidated your memory is over time
-- **Activity timeline** — facts created per day, last 30 days
-
-The dashboard auto-refreshes every 5 seconds. Press `1–4` to switch tabs,
-`r` to force refresh, `q` to quit.
+Usage stays available in the footer as well as its own view. Limits are reported
+per account and window; API costs retain currency, period, source and whether
+they are reported or estimated. Missing data remains unavailable, and failed
+refreshes keep the last observation marked stale. No account is connected
+automatically. See the [workbench guide](docs/tui.md) and [Usage setup](docs/usage.md).
 
 `graymatter doctor --graph` extends visibility to the knowledge graph itself:
 hubs by degree, articulation points, orphans, and a declared connectivity
@@ -154,7 +158,7 @@ Install and see it working in under a minute — no API keys, no Ollama:
 
 ```bash
 go install github.com/angelnicolasc/graymatter/cmd/graymatter@latest
-graymatter demo              # a working store with 3 agents, then the TUI opens
+graymatter demo              # offline sample store, then the workbench opens
 graymatter init              # wire YOUR project: MCP config + memory block
 graymatter init --hooks      # Claude Code: memory injected every turn
 graymatter doctor            # read-only observations of local setup artifacts
@@ -435,7 +439,7 @@ graymatter kg render --out g.html    # self-contained page (or .dot)
 # lifecycle + inspection
 graymatter pin "agent" "fact"        # exempt from decay/pruning (ADR-010)
 graymatter unpin "agent" "fact"      # restore normal decay
-graymatter tui                       # 4-view terminal UI
+graymatter tui                       # memory workbench: six views
 graymatter status                    # facts, recalls, KG state
 graymatter doctor                    # read-only setup observations; readiness not evaluated
 graymatter doctor --graph --html     # KG analytics + visual render

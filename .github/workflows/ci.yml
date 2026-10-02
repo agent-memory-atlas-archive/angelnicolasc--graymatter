@@ -58,6 +58,10 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Vet CLI module
+        working-directory: cmd/graymatter
+        run: go vet ./...
+
       # 600s, not the 300s the other suites use: pkg/memory under -race is the
       # slowest gated suite on a Windows runner, measuring 119-173s across green
       # runs (162s on run 33846765301). That is under 2x headroom, and a loaded
@@ -72,7 +76,7 @@ jobs:
       - name: Test CLI module with coverage
         working-directory: cmd/graymatter
         shell: bash
-        run: go test -race -count=1 -timeout=300s -coverprofile=../../coverage-cli.out -covermode=atomic ./internal/harness/... ./internal/kg/... ./internal/server/... ./internal/plugin/... ./internal/mcp/... ./internal/session/... ./internal/daemon/... ./internal/httpauth/... ./internal/hookpacket/...
+        run: go test -race -count=1 -timeout=300s -coverprofile=../../coverage-cli.out -covermode=atomic ./internal/harness/... ./internal/kg/... ./internal/server/... ./internal/plugin/... ./internal/mcp/... ./internal/session/... ./internal/daemon/... ./internal/httpauth/... ./internal/hookpacket/... ./internal/usage/...
 
       # The two coverage steps above enumerate packages explicitly, which left
       # the root package and the CLI entrypoint untested on every platform:
@@ -87,7 +91,11 @@ jobs:
       - name: Test CLI entrypoint package
         working-directory: cmd/graymatter
         shell: bash
-        run: go test -race -count=1 -timeout=300s .
+        # This package now includes several real-binary acceptance suites.
+        # A Windows run reached the old 300s package limit while its active
+        # test had run only 17s. Keep per-operation deadlines, but allow the
+        # sequential package enough time; internal package limits stay 300s.
+        run: go test -race -count=1 -timeout=600s .
 
       # ./benchmarks/... was missing from every step above, so the tests that
       # guard published numbers never ran in CI at all. They are the gates that

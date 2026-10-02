@@ -30,8 +30,9 @@ type TokenUsage struct {
 	Requests   uint64 `json:"requests"`
 }
 
-// TokenUsageSummary is the compact aggregate consumed by the dashboard. All
-// rollups come from the same ledger rows — no estimation, no extrapolation.
+// TokenUsageSummary is the legacy local harness aggregate. Token counts are
+// observed, but TotalUSD is a list-price estimate with incomplete coverage: it
+// excludes other clients, memory embeddings, provider adjustments and tools.
 type TokenUsageSummary struct {
 	Loaded     bool
 	Input      uint64
@@ -40,7 +41,10 @@ type TokenUsageSummary struct {
 	CacheWrite uint64
 	Requests   uint64
 	TotalUSD   float64
-	Partial    bool // true if any row's model was not in ModelPrices
+	Partial    bool // local harness coverage is always partial
+	Unpriced   bool // at least one model could not be priced
+	Source     string
+	CostKind   string // estimate; never provider-reported spend
 
 	// Aggregated by model for the "by model" breakdown.
 	ByModel []ModelBreakdown
@@ -136,7 +140,7 @@ func LoadTokenUsageSummary(db *bolt.DB, days int) (TokenUsageSummary, error) {
 	cutoffKey := dayKey(cutoff)
 
 	byModel := map[string]*ModelBreakdown{}
-	sum := TokenUsageSummary{Loaded: true}
+	sum := TokenUsageSummary{Loaded: true, Partial: true, Source: "legacy-harness-rollup", CostKind: "estimate"}
 
 	err := db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketTokenUsage)
@@ -164,6 +168,7 @@ func LoadTokenUsageSummary(db *bolt.DB, days int) (TokenUsageSummary, error) {
 				cost = pricing.CostUSD(row.Input, row.Output, row.CacheRead, row.CacheWrite)
 			} else {
 				sum.Partial = true
+				sum.Unpriced = true
 			}
 			sum.TotalUSD += cost
 

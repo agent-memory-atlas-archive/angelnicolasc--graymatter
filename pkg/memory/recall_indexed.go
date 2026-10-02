@@ -55,6 +55,9 @@ func (s *Store) runRecallPipelineIndexed(ctx context.Context, agentID, query str
 }
 
 func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) (*recallPipeline, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	start := time.Now()
 	doStem := s.cfg.StemKeywords
 	// Compact ranking and canonical head/feedback loads use several read
@@ -72,6 +75,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 		}
 	}
 	stable := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !policy.metadata {
 			return nil
 		}
@@ -89,7 +95,10 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	// together: rebuilding them meant a 30 000-entry map insert and a
 	// 30 000-element filter pass on every query, for data that only changes
 	// when something writes.
-	part, ok := s.idxPartition(agentID)
+	part, ok := s.idxPartition(ctx, agentID, policy.preview)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, errIndexUnusable
 	}
@@ -98,6 +107,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	if policy.filtered() {
 		eligible := make([]idxSpineEntry, 0, len(live))
 		for _, e := range live {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if int(e.confidence) >= ConfidenceLevel(*policy.minimum) {
 				eligible = append(eligible, e)
 			}
@@ -105,6 +117,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 		live = eligible
 		spineIdx = make(map[string]int, len(live))
 		for i := range live {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			spineIdx[live[i].id] = i
 		}
 	}
@@ -112,13 +127,13 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 		if err := stable(); err != nil {
 			return nil, err
 		}
-		if s.cfg.OnRecall != nil {
+		if !policy.preview && s.cfg.OnRecall != nil {
 			s.cfg.OnRecall(agentID, query, 0, time.Since(start))
 		}
 		return nil, nil
 	}
 
-	aliases, err := s.idxFetch(agentID, aliasIDs)
+	aliases, err := s.idxFetchContext(ctx, agentID, aliasIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +145,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	// the query.
 	vectorRank := make(map[string]int, min(vectorBudget(topK), len(live)))
 	vecResults, vecErr := s.vectorSearchWithPolicy(ctx, agentID, effectiveQuery, vectorBudget(topK), spineIdx, policy)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if vecErr != nil && (policy.filtered() || errors.Is(vecErr, errConfidenceQueryChanged)) {
 		return nil, vecErr
 	}
@@ -181,6 +199,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	if err := s.db.View(func(tx *bolt.Tx) error {
 		tb := idxBucketRO(tx, bucketIdxTerms, agentID)
 		for _, t := range uniqTerms {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			df := idxDFForCorpus(tb, t, spineIdx, policy.filtered())
 			dfCache[t] = df
 			if df == 0 {
@@ -203,11 +224,13 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 				// That is a re-specification, not an optimisation.
 				continue
 			}
-			idxWalkPostings(tb, t, func(id string, tf int) {
+			if err := idxWalkPostingsContext(ctx, tb, t, func(id string, tf int) {
 				if i, isLive := spineIdx[id]; isLive {
 					raw[i] += float64(tf) * w
 				}
-			})
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
@@ -232,6 +255,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 
 	kwSorted := make([]entry, 0, 64)
 	for i := range live {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if raw[i] == 0 {
 			continue
 		}
@@ -242,6 +268,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	sort.Slice(kwSorted, func(i, j int) bool { return less(kwSorted[i], kwSorted[j]) })
 	kwRank := make(map[string]int, len(kwSorted))
 	for i, e := range kwSorted {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		kwRank[e.id] = i + 1
 	}
 
@@ -260,6 +289,9 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 		baseScores = make(map[string]float64, len(live))
 	}
 	for i := range live {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		id := live[i].id
 		rrf := w.Recency / (k + float64(i+1))
 		if r, hit := vectorRank[id]; hit {
@@ -277,10 +309,13 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	sort.Slice(fused, func(i, j int) bool { return less(fused[i], fused[j]) })
 	allScored := make([]scored, len(fused))
 	for i, e := range fused {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		allScored[i] = scored{e.id, e.score}
 	}
 
-	if s.debugRanking != nil {
+	if !policy.preview && s.debugRanking != nil {
 		snapshot := make([]scored, len(allScored))
 		copy(snapshot, allScored)
 		s.debugRanking(query, snapshot)
@@ -301,7 +336,7 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	// The head of the ranking has to be readable: RecallDetailed dedups by
 	// text as it walks it, so "enough" is not topK entries but topK distinct
 	// texts. Widen until that holds or the ranking runs out.
-	if err := s.idxLoadHead(agentID, allScored, topK, loaded); err != nil {
+	if err := s.idxLoadHeadContext(ctx, agentID, allScored, topK, loaded); err != nil {
 		return nil, err
 	}
 
@@ -313,13 +348,16 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 	wantsTexts := s.graph != nil
 	s.mu.RUnlock()
 	if len(tombIDs) > 0 {
-		tombs, terr := s.idxFetch(agentID, tombIDs)
+		tombs, terr := s.idxFetchContext(ctx, agentID, tombIDs)
 		if terr != nil {
 			return nil, terr
 		}
 		supersededTexts = make(map[string]bool, len(tombs))
 		retiredBy = make(map[string][]string)
 		for _, f := range tombs {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if wantsTexts {
 				supersededTexts[f.Text] = true
 			}
@@ -375,8 +413,16 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 		effectiveQuery: effectiveQuery,
 		doStem:         doStem,
 		n:              len(live),
-		df:             func(t string) int { return s.idxDFCachedForCorpus(agentID, t, dfOut, spineIdx, policy.filtered()) },
+		df: func(t string) int {
+			if ctx.Err() != nil {
+				return 0
+			}
+			return s.idxDFCachedForCorpus(agentID, t, dfOut, spineIdx, policy.filtered())
+		},
 		tf: func(id string) map[string]int {
+			if ctx.Err() != nil {
+				return nil
+			}
 			if tf, hit := tfByID[id]; hit {
 				return tf
 			}
@@ -392,7 +438,7 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 			return tf
 		},
 		seedDocs: func(seeds map[string]bool) []map[string]int {
-			return s.idxSeedDocs(agentID, seeds, spineIdx, doStem)
+			return s.idxSeedDocsContext(ctx, agentID, seeds, spineIdx, doStem)
 		},
 		ranked: allScored,
 		topK:   topK,
@@ -434,7 +480,20 @@ func (s *Store) runRecallPipelineIndexedWithPolicy(ctx context.Context, agentID,
 // case). Walking forward and emitting whole timestamp groups from the back
 // keeps both directions right in one pass.
 func (s *Store) idxSpineOrdered(agentID string) ([]idxSpineEntry, bool) {
-	if !s.idxEnsure(agentID) {
+	return s.idxSpineOrderedForInspection(context.Background(), agentID, false)
+}
+
+func (s *Store) idxSpineOrderedForInspection(ctx context.Context, agentID string, preview bool) ([]idxSpineEntry, bool) {
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	if preview {
+		// A missing/stale index normally rebuilds on demand. Inspection must
+		// instead fall back to a canonical scan without repairing durable data.
+		if ok, err := s.idxUsable(agentID); err != nil || !ok {
+			return nil, false
+		}
+	} else if !s.idxEnsure(agentID) {
 		return nil, false
 	}
 	// The spine is the same slice for every query until something writes, and
@@ -459,18 +518,28 @@ func (s *Store) idxSpineOrdered(agentID string) ([]idxSpineEntry, bool) {
 
 	var asc []idxSpineEntry
 	if err := s.db.View(func(tx *bolt.Tx) error {
-		asc = idxSpineAsc(tx, agentID)
-		return nil
+		var err error
+		asc, err = idxSpineAscContext(ctx, tx, agentID)
+		return err
 	}); err != nil {
 		return nil, false
 	}
 	for i := range asc {
+		if ctx.Err() != nil {
+			return nil, false
+		}
 		asc[i].tie = i // ascending order IS the tie-break order
 	}
 	out := make([]idxSpineEntry, 0, len(asc))
 	for end := len(asc); end > 0; {
+		if ctx.Err() != nil {
+			return nil, false
+		}
 		start := end - 1
 		for start > 0 && asc[start-1].created.Equal(asc[end-1].created) {
+			if ctx.Err() != nil {
+				return nil, false
+			}
 			start--
 		}
 		out = append(out, asc[start:end]...)
@@ -489,8 +558,8 @@ func (s *Store) idxSpineOrdered(agentID string) ([]idxSpineEntry, bool) {
 // aliases are vocabulary; tombstones are neither, and are read only for the
 // lineage a receipt may ask about. None of that depends on the query, so none
 // of it belongs in the per-query path.
-func (s *Store) idxPartition(agentID string) (spinePartition, bool) {
-	spine, ok := s.idxSpineOrdered(agentID)
+func (s *Store) idxPartition(ctx context.Context, agentID string, preview bool) (spinePartition, bool) {
+	spine, ok := s.idxSpineOrderedForInspection(ctx, agentID, preview)
 	if !ok {
 		return spinePartition{}, false
 	}
@@ -499,6 +568,9 @@ func (s *Store) idxPartition(agentID string) (spinePartition, bool) {
 	}
 	p := spinePartition{live: make([]idxSpineEntry, 0, len(spine))}
 	for _, e := range spine {
+		if ctx.Err() != nil {
+			return spinePartition{}, false
+		}
 		switch {
 		case e.flags&idxFlagAlias != 0:
 			if e.flags&idxFlagSuperseded == 0 {
@@ -512,6 +584,9 @@ func (s *Store) idxPartition(agentID string) (spinePartition, bool) {
 	}
 	p.index = make(map[string]int, len(p.live))
 	for i := range p.live {
+		if ctx.Err() != nil {
+			return spinePartition{}, false
+		}
 		p.index[p.live[i].id] = i
 	}
 	s.partitionStore(agentID, spine, p)
@@ -600,12 +675,19 @@ type spineSnapshot struct {
 
 // idxFetch loads the lite form of the given IDs.
 func (s *Store) idxFetch(agentID string, ids []string) ([]Fact, error) {
+	return s.idxFetchContext(context.Background(), agentID, ids)
+}
+
+func (s *Store) idxFetchContext(ctx context.Context, agentID string, ids []string) ([]Fact, error) {
 	set := make(map[string]bool, len(ids))
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		set[id] = true
 	}
 	m := make(map[string]Fact, len(ids))
-	if err := s.idxFetchInto(agentID, set, m); err != nil {
+	if err := s.idxFetchIntoContext(ctx, agentID, set, m); err != nil {
 		return nil, err
 	}
 	out := make([]Fact, 0, len(m))
@@ -618,11 +700,18 @@ func (s *Store) idxFetch(agentID string, ids []string) ([]Fact, error) {
 }
 
 func (s *Store) idxFetchInto(agentID string, ids map[string]bool, dst map[string]Fact) error {
+	return s.idxFetchIntoContext(context.Background(), agentID, ids, dst)
+}
+
+func (s *Store) idxFetchIntoContext(ctx context.Context, agentID string, ids map[string]bool, dst map[string]Fact) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(ids) == 0 {
 		return nil
 	}
 	return s.db.View(func(tx *bolt.Tx) error {
-		got, err := s.idxLoadFacts(tx, agentID, ids)
+		got, err := s.idxLoadFactsContext(ctx, tx, agentID, ids)
 		if err != nil {
 			return err
 		}
@@ -637,11 +726,18 @@ func (s *Store) idxFetchInto(agentID string, ids map[string]bool, dst map[string
 // dedups by text, so a window of exactly topK entries can come up short; this
 // widens the window until topK distinct texts are in hand.
 func (s *Store) idxLoadHead(agentID string, ranked []scored, topK int, dst map[string]Fact) error {
+	return s.idxLoadHeadContext(context.Background(), agentID, ranked, topK, dst)
+}
+
+func (s *Store) idxLoadHeadContext(ctx context.Context, agentID string, ranked []scored, topK int, dst map[string]Fact) error {
 	if topK <= 0 || len(ranked) == 0 {
 		return nil
 	}
 	window := topK
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if window > len(ranked) {
 			window = len(ranked)
 		}
@@ -651,7 +747,7 @@ func (s *Store) idxLoadHead(agentID string, ranked []scored, topK int, dst map[s
 				missing[sc.id] = true
 			}
 		}
-		if err := s.idxFetchInto(agentID, missing, dst); err != nil {
+		if err := s.idxFetchIntoContext(ctx, agentID, missing, dst); err != nil {
 			return err
 		}
 		distinct := make(map[string]bool, window)
@@ -710,25 +806,39 @@ func idxDFForCorpus(tb *bolt.Bucket, term string, liveIdx map[string]int, filter
 // containing at least one seed term, which is exactly what the scan path
 // selects by walking the whole corpus and testing each fact.
 func (s *Store) idxSeedDocs(agentID string, seeds map[string]bool, liveIdx map[string]int, doStem bool) []map[string]int {
+	return s.idxSeedDocsContext(context.Background(), agentID, seeds, liveIdx, doStem)
+}
+
+func (s *Store) idxSeedDocsContext(ctx context.Context, agentID string, seeds map[string]bool, liveIdx map[string]int, doStem bool) []map[string]int {
 	ids := make(map[string]bool)
-	_ = s.db.View(func(tx *bolt.Tx) error {
+	if err := s.db.View(func(tx *bolt.Tx) error {
 		tb := idxBucketRO(tx, bucketIdxTerms, agentID)
 		for t := range seeds {
-			idxPostings(tb, t, ids)
+			if err := idxWalkPostingsContext(ctx, tb, t, func(id string, _ int) { ids[id] = true }); err != nil {
+				return err
+			}
 		}
+		return ctx.Err()
+	}); err != nil {
 		return nil
-	})
+	}
 	for id := range ids {
+		if ctx.Err() != nil {
+			return nil
+		}
 		if _, isLive := liveIdx[id]; !isLive {
 			delete(ids, id)
 		}
 	}
 	facts := make(map[string]Fact, len(ids))
-	if err := s.idxFetchInto(agentID, ids, facts); err != nil {
+	if err := s.idxFetchIntoContext(ctx, agentID, ids, facts); err != nil {
 		return nil
 	}
 	out := make([]map[string]int, 0, len(facts))
 	for _, f := range facts {
+		if ctx.Err() != nil {
+			return nil
+		}
 		toks := tokenizeStem(f.Text, doStem)
 		tf := make(map[string]int, len(toks))
 		for _, t := range toks {

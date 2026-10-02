@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/rpc"
@@ -33,6 +34,9 @@ type Client struct {
 	capabilities              map[string]bool
 	defaultConfidenceWeight   float64
 	defaultConfidenceOverride bool
+	inspectionOnce            sync.Once
+	inspectionSendSlots       chan struct{}
+	inspectionCancelSlots     chan struct{}
 }
 
 // DialOptions tunes how Dial finds and connects to a daemon.
@@ -63,6 +67,10 @@ type DialOptions struct {
 // consolidateTimeout bounds Consolidate calls; the daemon-side work may
 // include an LLM round-trip, so the regular CallTimeout is too tight.
 const consolidateTimeout = 5 * time.Minute
+
+// ErrCallTimeout means an in-flight request exceeded its response deadline.
+// For mutations the server may still have committed; this is not a safe retry.
+var ErrCallTimeout = errors.New("rpc call timed out")
 
 // Dial opens a connection to a running daemon at dataDir, presenting the
 // auth token recorded in the discovery file.
@@ -168,7 +176,7 @@ func (c *Client) CallService(service, method string, req, resp any, timeout time
 		return call.Error
 	case <-t.C:
 		_ = c.Close()
-		return fmt.Errorf("rpc: %s.%s timed out after %s (connection closed)", service, method, timeout)
+		return fmt.Errorf("%w: %s.%s after %s (connection closed)", ErrCallTimeout, service, method, timeout)
 	}
 }
 
@@ -179,6 +187,10 @@ func (c *Client) Ping() error {
 	if err := c.call("Ping", &PingRequest{}, &resp); err != nil {
 		return err
 	}
+	return c.acceptPing(resp)
+}
+
+func (c *Client) acceptPing(resp PingResponse) error {
 	if resp.Protocol != Protocol {
 		return fmt.Errorf("rpc: protocol mismatch: server=%q client=%q", resp.Protocol, Protocol)
 	}

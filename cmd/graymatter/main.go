@@ -83,6 +83,7 @@ func main() {
 		mcpCmd(),
 		exportCmd(),
 		tuiCmd(),
+		usageCmd(),
 		runCmd(),
 		sessionsCmd(),
 		pluginCmd(),

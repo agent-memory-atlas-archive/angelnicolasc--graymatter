@@ -207,6 +207,9 @@ func (s *Store) recallExplainWithPolicy(ctx context.Context, agentID, query stri
 	seen := make(map[string]bool, capacity)
 	touched := make([]Fact, 0, capacity)
 	for _, sc := range p.ranked {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(receipts) >= topK {
 			break
 		}
@@ -223,9 +226,14 @@ func (s *Store) recallExplainWithPolicy(ctx context.Context, agentID, query stri
 		f.AccessedAt = p.nowT.UTC()
 		touched = append(touched, *f)
 	}
-	s.touchFacts(touched)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !policy.preview {
+		s.touchFacts(touched)
+	}
 
-	if s.cfg.OnRecall != nil {
+	if !policy.preview && s.cfg.OnRecall != nil {
 		s.cfg.OnRecall(agentID, query, len(receipts), time.Since(start))
 	}
 	return receipts, nil
@@ -282,7 +290,7 @@ func (s *Store) runRecallPipelineScan(ctx context.Context, agentID, query string
 
 func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, query string, topK int, policy recallPolicy) (*recallPipeline, error) {
 	start := time.Now()
-	stored, err := s.listLite(agentID)
+	stored, err := s.listLiteContext(ctx, agentID)
 	if err != nil || len(stored) == 0 {
 		return nil, err
 	}
@@ -294,6 +302,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	var aliases []Fact
 	content := make([]Fact, 0, len(stored))
 	for _, f := range stored {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if f.Kind == KindAlias {
 			if !f.IsSuperseded() {
 				aliases = append(aliases, f)
@@ -316,6 +327,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	var supersededTexts map[string]bool
 	var retiredBy map[string][]string
 	for _, f := range content {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if f.IsSuperseded() {
 			if supersededTexts == nil {
 				supersededTexts = make(map[string]bool)
@@ -334,7 +348,7 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 		}
 	}
 	if len(facts) == 0 {
-		if s.cfg.OnRecall != nil {
+		if !policy.preview && s.cfg.OnRecall != nil {
 			s.cfg.OnRecall(agentID, query, 0, time.Since(start))
 		}
 		return nil, nil
@@ -343,6 +357,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	factByID := make(map[string]*Fact, len(facts))
 	factIndex := make(map[string]int, len(facts))
 	for i := range facts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		factByID[facts[i].ID] = &facts[i]
 		factIndex[facts[i].ID] = i
 	}
@@ -376,6 +393,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	// --- Signal 1: vector similarity ---
 	vectorRank := make(map[string]int, min(vectorBudget(topK), len(facts))) // factID → rank (1-based)
 	vecResults, vecErr := s.vectorSearchWithPolicy(ctx, agentID, effectiveQuery, vectorBudget(topK), factIndex, policy)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if vecErr != nil && (policy.filtered() || errors.Is(vecErr, errConfidenceQueryChanged)) {
 		return nil, vecErr
 	}
@@ -402,13 +422,19 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	// trigger and the vocabulary neighbourhood read — the specification
 	// requires the trigger to cost no extra pass, so this is the same single
 	// pass with the same scores.
-	kwScores, df, perFactTf := keywordScoreDetailed(effectiveQuery, facts, s.cfg.StemKeywords)
+	kwScores, df, perFactTf, err := keywordScoreDetailedContext(ctx, effectiveQuery, facts, s.cfg.StemKeywords)
+	if err != nil {
+		return nil, err
+	}
 	type kwEntry struct {
 		id    string
 		score float64
 	}
 	kwSorted := make([]kwEntry, 0, len(kwScores))
 	for id, sc := range kwScores {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		kwSorted = append(kwSorted, kwEntry{id, sc})
 	}
 	sort.Slice(kwSorted, func(i, j int) bool {
@@ -416,6 +442,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	})
 	kwRank := make(map[string]int, len(kwSorted))
 	for i, e := range kwSorted {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		kwRank[e.id] = i + 1
 	}
 
@@ -433,6 +462,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	// determinism.
 	recRank := make(map[string]int, len(facts))
 	for i := range facts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		recRank[facts[i].ID] = i + 1
 	}
 	nowT := s.now()
@@ -455,6 +487,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 		baseScores = make(map[string]float64, len(facts))
 	}
 	for _, f := range facts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		rrf := 0.0
 		if r, ok := vectorRank[f.ID]; ok {
 			rrf += w.Vector / (k + float64(r))
@@ -473,11 +508,17 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 
 	allScored := make([]scored, 0, len(candidates))
 	for id, sc := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		allScored = append(allScored, scored{id, sc})
 	}
 	sort.Slice(allScored, func(i, j int) bool {
 		return rankBefore(allScored[i].id, allScored[i].score, allScored[j].id, allScored[j].score)
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Test-only seam. Nil in production; the golden fixture sets it to freeze
 	// the fused scores themselves rather than only their argmax.
@@ -487,7 +528,7 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 	// weight changed from 0.5 to 0.6, and with the RRF constant k changed from
 	// 60 to 50. Both alter every score; neither reordered the head of this
 	// corpus. A gate on ranking knobs has to observe the ranking arithmetic.
-	if s.debugRanking != nil {
+	if !policy.preview && s.debugRanking != nil {
 		snapshot := make([]scored, len(allScored))
 		copy(snapshot, allScored)
 		s.debugRanking(query, snapshot)
@@ -526,6 +567,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 		seedDocs: func(seeds map[string]bool) []map[string]int {
 			out := make([]map[string]int, 0, len(perFactTf))
 			for _, tf := range perFactTf {
+				if ctx.Err() != nil {
+					return nil
+				}
 				for t := range tf {
 					if seeds[t] {
 						out = append(out, tf)
@@ -538,6 +582,9 @@ func (s *Store) runRecallPipelineScanWithPolicy(ctx context.Context, agentID, qu
 		ranked: allScored,
 		topK:   topK,
 	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	return &recallPipeline{
 		policy:          policy,
@@ -610,15 +657,26 @@ func keywordScoreStem(query string, facts []Fact, doStem bool) map[string]float6
 // pass comment above describes — so the feedback costs nothing extra over
 // the plain scorer, and the scores are byte-identical.
 func keywordScoreDetailed(query string, facts []Fact, doStem bool) (map[string]float64, map[string]int, []map[string]int) {
+	scores, df, tf, _ := keywordScoreDetailedContext(context.Background(), query, facts, doStem)
+	return scores, df, tf
+}
+
+func keywordScoreDetailedContext(ctx context.Context, query string, facts []Fact, doStem bool) (map[string]float64, map[string]int, []map[string]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	queryTerms := tokenizeStem(query, doStem)
 	if len(queryTerms) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	perFactTf := make([]map[string]int, len(facts))
 	factLen := make([]int, len(facts))
 	df := make(map[string]int, len(queryTerms)*8)
 	for i, f := range facts {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 		terms := tokenizeStem(f.Text, doStem)
 		tf := make(map[string]int, len(terms))
 		for _, t := range terms {
@@ -638,6 +696,9 @@ func keywordScoreDetailed(query string, facts []Fact, doStem bool) (map[string]f
 	n := float64(len(facts))
 	scores := make(map[string]float64, len(facts))
 	for i := range facts {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 		var score float64
 		for _, qt := range queryTerms {
 			if count, ok := perFactTf[i][qt]; ok {
@@ -649,7 +710,7 @@ func keywordScoreDetailed(query string, facts []Fact, doStem bool) (map[string]f
 			scores[facts[i].ID] = score / float64(factLen[i]+1)
 		}
 	}
-	return scores, df, perFactTf
+	return scores, df, perFactTf, ctx.Err()
 }
 
 // stopWordSet is allocated once at package init time and shared across all calls.

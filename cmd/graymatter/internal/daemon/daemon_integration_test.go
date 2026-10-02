@@ -63,10 +63,22 @@ func buildBinary(t *testing.T) string {
 // duration of the test.
 func withBuiltDaemon(t *testing.T) {
 	t.Helper()
+	isolateTestDaemonProviders(t)
 	bin := buildBinary(t)
 	prev := resolveExecutable
 	resolveExecutable = func() (string, error) { return bin, nil }
 	t.Cleanup(func() { resolveExecutable = prev })
+}
+
+// Persistence/concurrency integration tests must not inherit a developer's
+// paid providers or allow asynchronous model summaries to change fixtures.
+// Provider-specific behavior has separate tests with explicit local fakes.
+func isolateTestDaemonProviders(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "VOYAGE_API_KEY", "GRAYMATTER_USAGE_ALIAS"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("GRAYMATTER_OLLAMA_URL", "http://127.0.0.1:1")
 }
 
 // startTestDaemon retains the child so even a failed startup or assertion is
@@ -75,6 +87,7 @@ func withBuiltDaemon(t *testing.T) {
 // left behind by a failed test.
 func startTestDaemon(t *testing.T, dir string, idleExit time.Duration) func() {
 	t.Helper()
+	isolateTestDaemonProviders(t)
 	log, err := os.Create(filepath.Join(dir, "daemon.log"))
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +229,18 @@ func TestConcurrentClients_ThroughDaemon(t *testing.T) {
 	}
 	if len(facts) != clients*writes {
 		t.Fatalf("got %d facts, want %d (lost writes = lock contention)", len(facts), clients*writes)
+	}
+	counts := make(map[string]int, len(facts))
+	for _, fact := range facts {
+		counts[fact.Text]++
+	}
+	for i := 0; i < clients; i++ {
+		for j := 0; j < writes; j++ {
+			text := fmt.Sprintf("c%d-%d", i, j)
+			if counts[text] != 1 {
+				t.Errorf("write %q persisted %d times, want exactly once", text, counts[text])
+			}
+		}
 	}
 
 	if err := lead.Shutdown(); err != nil {

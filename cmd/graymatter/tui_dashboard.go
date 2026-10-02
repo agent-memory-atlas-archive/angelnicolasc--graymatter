@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"sort"
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/angelnicolasc/graymatter/cmd/graymatter/internal/harness"
 )
@@ -65,7 +66,10 @@ type dashboardData struct {
 	Tokens harness.TokenUsageSummary
 }
 
-type dashboardLoadedMsg struct{ data dashboardData }
+type dashboardLoadedMsg struct {
+	data       dashboardData
+	generation uint64
+}
 type dashboardTickMsg struct{}
 
 // dashboardTick fires every 5s while the TUI is open; cheap enough to run
@@ -80,18 +84,19 @@ func dashboardTick() tea.Cmd {
 // loadDashboard builds a dashboardData snapshot from the store. It iterates
 // all agents → all facts, O(N) over total facts. Embedding size is inferred
 // from the embedding slice length × 4 (float32).
-func (m tuiModel) loadDashboard() tea.Cmd {
+func (m *tuiModel) loadDashboard() tea.Cmd {
+	generation := m.startRequest("status")
 	store := m.store
 	return func() tea.Msg {
 		d := dashboardData{Loaded: true}
 		if store == nil {
-			return dashboardLoadedMsg{d}
+			return dashboardLoadedMsg{d, generation}
 		}
 
 		agents, err := store.ListAgents()
 		if err != nil {
 			d.Err = err
-			return dashboardLoadedMsg{d}
+			return dashboardLoadedMsg{d, generation}
 		}
 		d.AgentsN = len(agents)
 
@@ -109,7 +114,7 @@ func (m tuiModel) loadDashboard() tea.Cmd {
 				// One agent failing to read is not "that agent has no facts".
 				// Report it rather than quietly dropping it from the totals.
 				d.Err = err
-				return dashboardLoadedMsg{d}
+				return dashboardLoadedMsg{d, generation}
 			}
 			if len(facts) == 0 {
 				continue
@@ -194,7 +199,7 @@ func (m tuiModel) loadDashboard() tea.Cmd {
 			d.Tokens = ts
 		}
 
-		return dashboardLoadedMsg{d}
+		return dashboardLoadedMsg{d, generation}
 	}
 }
 
@@ -437,7 +442,7 @@ func (m tuiModel) renderWeightPanel(d dashboardData, width, outerH int) string {
 	}
 
 	labels := []string{"> 0.8", "0.5-0.8", "0.2-0.5", "< 0.2"}
-	colors := []lipgloss.Color{colorMint, colorCyan, colorAmber, colorRose}
+	colors := []color.Color{colorMint, colorCyan, colorAmber, colorRose}
 
 	maxCount := 0
 	for _, v := range d.WeightBuckets {

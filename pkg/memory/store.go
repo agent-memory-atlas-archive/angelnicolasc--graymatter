@@ -350,7 +350,11 @@ func Open(cfg StoreConfig) (*Store, error) {
 	// Use the caller-supplied vector backend, or default to chromem-go.
 	vectors := cfg.VectorBackend
 	if vectors == nil {
-		v, err := newChromemVectorStore(cfg.DataDir)
+		openVectors := newChromemVectorStore
+		if readOnly {
+			openVectors = newReadOnlyChromemVectorStore
+		}
+		v, err := openVectors(cfg.DataDir)
 		if err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("open vector store: %w", err)
@@ -380,7 +384,9 @@ func Open(cfg StoreConfig) (*Store, error) {
 	}
 
 	// Hydrate known agent IDs so collections are ready.
-	_ = s.loadAgents()
+	if !readOnly {
+		_ = s.loadAgents()
+	}
 
 	if !readOnly {
 		// Detect an embedding-provider switch and self-heal: every live fact
@@ -725,6 +731,13 @@ func (s *Store) List(agentID string) ([]Fact, error) {
 // factLite). Every caller is inside this package, so the lite/full agreement
 // test in recall_lite_test.go is what keeps the two decoders honest.
 func (s *Store) listLite(agentID string) ([]Fact, error) {
+	return s.listLiteContext(context.Background(), agentID)
+}
+
+func (s *Store) listLiteContext(ctx context.Context, agentID string) ([]Fact, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var facts []Fact
 	if err := s.db.View(func(tx *bolt.Tx) error {
 		parent := tx.Bucket(bucketFacts)
@@ -736,6 +749,9 @@ func (s *Store) listLite(agentID string) ([]Fact, error) {
 			return nil
 		}
 		return b.ForEach(func(_, v []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			f, err := unmarshalFactLite(v)
 			if err != nil {
 				return nil // skip corrupt entries, same as List
@@ -747,7 +763,7 @@ func (s *Store) listLite(agentID string) ([]Fact, error) {
 		return nil, err
 	}
 	sortFactsByTime(facts)
-	return facts, nil
+	return facts, ctx.Err()
 }
 
 // ListAgents returns all known agent IDs.
@@ -773,28 +789,8 @@ func (s *Store) ListAgents() ([]string, error) {
 
 // Stats returns aggregate statistics for agentID.
 func (s *Store) Stats(agentID string) (MemoryStats, error) {
-	facts, err := s.List(agentID)
-	if err != nil {
-		return MemoryStats{}, err
-	}
-	st := MemoryStats{AgentID: agentID, FactCount: len(facts)}
-	if len(facts) == 0 {
-		return st, nil
-	}
-	var weightSum float64
-	st.OldestAt = facts[0].CreatedAt
-	st.NewestAt = facts[0].CreatedAt
-	for _, f := range facts {
-		weightSum += f.Weight
-		if f.CreatedAt.Before(st.OldestAt) {
-			st.OldestAt = f.CreatedAt
-		}
-		if f.CreatedAt.After(st.NewestAt) {
-			st.NewestAt = f.CreatedAt
-		}
-	}
-	st.AvgWeight = weightSum / float64(len(facts))
-	return st, nil
+	summary, err := s.SummarizeFacts(context.Background(), agentID)
+	return summary.All, err
 }
 
 // touchFacts persists access-metadata bumps for a recall batch in ONE

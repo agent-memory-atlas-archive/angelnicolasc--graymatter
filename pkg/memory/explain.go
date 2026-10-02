@@ -104,7 +104,7 @@ func (s *Store) newReceipt(f *Fact, p *recallPipeline, fused float64) RecallRece
 	s.mu.RLock()
 	extractor := s.extractor
 	s.mu.RUnlock()
-	if extractor != nil {
+	if !p.policy.preview && extractor != nil {
 		if ids, err := extractor.ExtractIDs(f.Text); err == nil && len(ids) > 0 {
 			r.KGLinks = ids
 		}
