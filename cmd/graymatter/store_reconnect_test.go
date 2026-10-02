@@ -165,22 +165,33 @@ func TestReconnectingStore_ConcurrentRedial(t *testing.T) {
 
 func TestReconnectingStore_ReadyProbesTheStore(t *testing.T) {
 	s := &fakeStore{}
-	rs := newReconnectingStore(s)
+	reopens := 0
+	// The constructor captures its opener. Inject the fake before constructing
+	// the store so this unit test never starts a real daemon on reconnection.
+	rs := newReconnectingStoreAt(s, func() (cliStore, error) {
+		reopens++
+		return nil, errors.New("gone")
+	})
 
 	if err := rs.Ready(); err != nil {
 		t.Fatalf("Ready on a live store: %v", err)
 	}
-	if s.calls.Load() == 0 {
-		t.Error("Ready did not make a round-trip; it would report healthy for a store it never touched")
+	if got := s.calls.Load(); got != 1 {
+		t.Errorf("Ready made %d store calls, want 1", got)
+	}
+	if reopens != 0 {
+		t.Errorf("Ready reopened a live store %d times", reopens)
 	}
 
 	// A store that has gone away and cannot be replaced must report unready.
 	s.dead.Store(true)
-	prev := reopenStore
-	reopenStore = func() (cliStore, error) { return nil, errors.New("gone") }
-	t.Cleanup(func() { reopenStore = prev })
-
-	if err := rs.Ready(); err == nil {
-		t.Error("Ready returned nil for an unreachable store")
+	if err := rs.Ready(); !errors.Is(err, netrpc.ErrShutdown) {
+		t.Errorf("Ready on an unreachable store = %v, want the original connection error", err)
+	}
+	if reopens != 1 {
+		t.Errorf("Ready reopened a dead store %d times, want 1", reopens)
+	}
+	if got := s.calls.Load(); got != 2 {
+		t.Errorf("Ready made %d total store calls, want 2", got)
 	}
 }

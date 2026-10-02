@@ -35,10 +35,7 @@ func buildE2EBinary(t *testing.T) string {
 		t.Skip("spawns the real binary and daemon; skipped in -short")
 	}
 	bin := filepath.Join(t.TempDir(), "graymatter-e2e.exe")
-	out, err := exec.Command("go", "build", "-o", bin, "github.com/angelnicolasc/graymatter/cmd/graymatter").CombinedOutput()
-	if err != nil {
-		t.Fatalf("build e2e binary: %v: %s", err, out)
-	}
+	copyCurrentE2EBinary(t, bin)
 	return bin
 }
 
