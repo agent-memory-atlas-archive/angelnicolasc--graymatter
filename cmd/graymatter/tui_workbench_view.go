@@ -37,7 +37,7 @@ func (m *tuiModel) syncPreview(reset bool) {
 		m.detail.GotoTop()
 	}
 	m.previewID = key
-	content := m.previewContent()
+	content := ansi.Wrap(m.previewContent(), max(1, m.detail.Width()), "")
 	if content != m.previewText {
 		m.detail.SetContent(content)
 		m.previewText = content
