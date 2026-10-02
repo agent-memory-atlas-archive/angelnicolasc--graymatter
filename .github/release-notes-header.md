@@ -1,6 +1,6 @@
 ## GrayMatter $TAG
 
-Persistent memory for Go AI agents. Single binary. Zero infra.
+Persistent memory for AI agents. Local storage, CLI and MCP server.
 
 ### Quick install
 

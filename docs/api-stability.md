@@ -28,8 +28,8 @@ Starting with **v0.1.0**, GrayMatter follows a best-effort compatibility policy 
 | `(*Memory).Close() error` | |
 | `(*Memory).Advanced() AdvancedStore` | Narrow handle for CRUD, listing, raw bbolt access |
 | `(*Memory).Config() Config` | |
-| `(*Memory).RememberWithOptions`, `RememberSharedWithOptions` | Unreleased. Accept `context.Context` and `memory.WriteOptions`, return the exact committed `memory.Fact`; normal writes retain automatic consolidation policy |
-| `(*Memory).RecallWithOptions`, `RecallExplainWithOptions`, `RecallSharedWithOptions`, `RecallAllWithOptions` | Unreleased. Accept `context.Context` and `memory.RecallOptions`; configured `TopK` applies |
+| `(*Memory).RememberWithOptions`, `RememberSharedWithOptions` | Added in v0.20.0. Accept `context.Context` and `memory.WriteOptions`, return the exact committed `memory.Fact`; normal writes retain automatic consolidation policy |
+| `(*Memory).RecallWithOptions`, `RecallExplainWithOptions`, `RecallSharedWithOptions`, `RecallAllWithOptions` | Added in v0.20.0. Accept `context.Context` and `memory.RecallOptions`; configured `TopK` applies |
 | `Config` struct — all fields present in v0.1.0 | New fields may be added |
 | `DefaultConfig() Config` | |
 | `EmbeddingMode` type and constants | |
@@ -41,12 +41,12 @@ Starting with **v0.1.0**, GrayMatter follows a best-effort compatibility policy 
 | `Open(cfg StoreConfig) (*Store, error)` | |
 | `(*Store).Put(ctx, agentID, text string) error` | |
 | `(*Store).PutReturningFact(ctx, agentID, text string) (Fact, error)` | Added after v0.18.0. Concrete `Store` capability, intentionally not part of `AdvancedStore`; returns the exact fact committed so callers can persist its identity without a post-write lookup |
-| `(*Store).PutWithOptionsReturningFact(ctx, agentID, text, WriteOptions) (Fact, error)` | Unreleased. Text, confidence, canonical ID and index maintenance commit in the same fact transaction |
-| `(*Store).ReviseWithOptions`, `ReviseFactsWithOptions` | Unreleased. Conservative omitted confidence, exact replacement identity; return a known committed replacement alongside a later retirement error |
-| `(*Store).RecallWithOptions`, `RecallExplainWithOptions`, `RecallSharedWithOptions`, `RecallAllWithOptions`, `BatchRecallWithOptions` | Unreleased. Per-call options; nonpositive `topK` uses 8. Existing raw Store recall signatures keep their legacy zero-count behavior |
-| `(*Store).DefaultConfidenceWeight() float64` | Unreleased optional adapter capability; advertises the configured default so request routing and negotiated RPC retain the same effective policy |
-| `WriteOptions`, `RecallOptions`, `RecallResult`, `RecallExplainResult`, `RetrievalMetadata`, `ConfidenceRanking` | Unreleased. Optional pointer fields distinguish omission from explicit labels/zero; additive result metadata is omitted for legacy calls |
-| `EligibleVectorStore`, `ExhaustiveVectorStore` | Unreleased optional capabilities; `VectorStore` and `AdvancedStore` require no new methods |
+| `(*Store).PutWithOptionsReturningFact(ctx, agentID, text, WriteOptions) (Fact, error)` | Added in v0.20.0. Text, confidence, canonical ID and index maintenance commit in the same fact transaction |
+| `(*Store).ReviseWithOptions`, `ReviseFactsWithOptions` | Added in v0.20.0. Conservative omitted confidence, exact replacement identity; return a known committed replacement alongside a later retirement error |
+| `(*Store).RecallWithOptions`, `RecallExplainWithOptions`, `RecallSharedWithOptions`, `RecallAllWithOptions`, `BatchRecallWithOptions` | Added in v0.20.0. Per-call options; nonpositive `topK` uses 8. Existing raw Store recall signatures keep their legacy zero-count behavior |
+| `(*Store).DefaultConfidenceWeight() float64` | Optional adapter capability added in v0.20.0; advertises the configured default so request routing and negotiated RPC retain the same effective policy |
+| `WriteOptions`, `RecallOptions`, `RecallResult`, `RecallExplainResult`, `RetrievalMetadata`, `ConfidenceRanking` | Added in v0.20.0. Optional pointer fields distinguish omission from explicit labels/zero; additive result metadata is omitted for legacy calls |
+| `EligibleVectorStore`, `ExhaustiveVectorStore` | Optional capabilities added in v0.20.0; `VectorStore` and `AdvancedStore` require no new methods |
 | `(*Store).Delete(agentID, factID string) error` | |
 | `(*Store).List(agentID string) ([]Fact, error)` | |
 | `(*Store).ListAgents() ([]string, error)` | |
@@ -115,9 +115,11 @@ enrichment because graph labels have no confidence receipts. Retrieval metadata
 reports `kg: "suppressed_min_confidence"`; without a filter it describes hints
 as `"hints_without_confidence_receipts"`. Explain never adds that hint tail.
 
-### Confidence options (Unreleased)
+<a id="confidence-options-unreleased"></a>
 
-These APIs and MCP/CLI options are implemented in this change and unavailable in
+### Confidence options
+
+These APIs and MCP/CLI options are available since v0.20.0 and absent from
 v0.19.1. Labels are writer declarations, not probabilities or verification by
 GrayMatter. New writes accept exactly `verified`, `inferred` or `unverified`.
 Absent/empty historical labels are effectively inferred; unknown historical
@@ -150,11 +152,12 @@ batch resolves it once after connection preflight and before fan-out, keeping
 one policy if the daemon restarts during the batch. Reconnection renegotiates
 the default for later requests.
 
-Both product and low-level defaults remain zero in this first delivery.
-A future positive product default requires prior notice in a published minor
-release and promotion in a subsequent minor release after the frozen quality
-gates pass. An Unreleased section is not published notice; this first delivery
-does not close issue #126. Explicit zero will remain the legacy ranking opt-out.
+Both product and low-level defaults remain zero in v0.20.0.
+A future positive product default requires explicit notice in a published
+minor release and promotion in a subsequent minor release after the frozen
+quality gates pass. v0.20.0 does not announce a positive default or close
+issue #126. Explicit zero remains the legacy ranking opt-out and preserves
+any requested filter.
 
 New RPC methods negotiate `confidence-write-v1`, `confidence-recall-v1`,
 `confidence-lifecycle-v1` and `confidence-shared-write-v1`. The separate shared
@@ -252,9 +255,9 @@ verified against a live `tools/list` exchange at the time of writing.
 
 | Tool | Required parameters | Optional parameters |
 |---|---|---|
-| `memory_search` | `agent_id`, `query` | `top_k` (default `8`), `explain` (boolean, default `false`), `min_confidence`, `confidence_weight` (Unreleased) |
-| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`), `min_confidence`, `confidence_weight` (Unreleased) |
-| `memory_add` | `agent_id`, `text` | `confidence` (Unreleased) |
+| `memory_search` | `agent_id`, `query` | `top_k` (default `8`), `explain` (boolean, default `false`), `min_confidence`, `confidence_weight` (since v0.20.0) |
+| `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`), `min_confidence`, `confidence_weight` (since v0.20.0) |
+| `memory_add` | `agent_id`, `text` | `confidence` (since v0.20.0) |
 | `memory_alias` | `agent_id`, `term`, `equivalents` | — |
 | `checkpoint_save` | `agent_id` | `state` (string containing a JSON object) |
 | `checkpoint_resume` | `agent_id` | `on_missing` (`"error"` \| `"empty"`, default `"error"`) |
@@ -265,7 +268,7 @@ verified against a live `tools/list` exchange at the time of writing.
 `anyOf` (at least one of the two spellings is required, both allowed); `agent` is deprecated,
 and when both spellings arrive `agent_id` wins.
 
-Unreleased `confidence` is accepted on reflect `add`/`update` only. Search
+Since v0.20.0, `confidence` is accepted on reflect `add`/`update` only. Search
 options on writes, confidence on other tools/actions, explicit null, wrong
 types, unknown labels and non-finite/out-of-range weights are errors. The runtime
 validates these new options explicitly; it does not enable global strict MCP
@@ -285,7 +288,7 @@ argument validation as a side effect.
 | `checkpoint_resume` with `on_missing: "empty"` | `{"found": false, "agent_id"}` | Added in v0.20.0. The successful absence result; `found` is always `false` and is declared non-optional. The output schema declares this shape and the success shape under `oneOf` |
 | `memory_reflect` | `{"action", "agent", "ok"}` | `ok` is `true` on success |
 
-Unreleased confidence calls preserve these keys and add declared optional
+Confidence calls added in v0.20.0 preserve these keys and add declared optional
 schema fields. Explicit-label add/update results carry `fact_id` and
 `confidence`. Search, explain and batch add optional `retrieval` with effective
 `min_confidence`, `confidence_weight`, `policy` and `kg`, including empty results.
@@ -294,18 +297,22 @@ Explain receipts add optional `ranking` with `base_score`, `final_score`,
 the same policy and identifies final scores. Legacy calls omit the new metadata.
 Batch applies one global policy to all input queries and its merged view.
 
+### Checkpoint resume absence and default
+
 Errors return text-only `isError: true` results without `structuredContent`;
 their wording may change. `checkpoint_resume` with no checkpoint returns such
 an error **by default**; the optional `on_missing` parameter (`"error"` — the
 default — or `"empty"`) lets a caller opt into the successful
 `{"found": false, "agent_id"}` result above instead. This is an additive
-option, not a behaviour change for existing callers. A default change to
-`"empty"` in **v0.21.0** is conditional on a successful real
-OpenChamber/OpenCode smoke and prior-minor notice in the released changelog
-and this document, per the deprecation rule above. If the client rejects the
-union schema, apply and validate the documented fallback before publishing
+option in v0.20.0, not a behaviour change for existing callers. **Advance
+notice:** a default change to `"empty"` in **v0.21.0** is conditional on a
+successful real OpenChamber/OpenCode smoke and publication of this prior-minor
+notice and the matching changelog notice, per the deprecation rule above.
+If the client rejects the union schema, apply and validate the documented
+fallback before publishing
 v0.20.0, keep `"error"` as the default, and defer the default change.
-Explicit `"error"` remains accepted as the legacy behaviour throughout v0.x.
+Callers that depend on absence being an error should pass `on_missing: "error"`
+explicitly; it remains accepted as the legacy behaviour throughout v0.x.
 Storage, daemon, and corrupt-record failures stay prose-only in both modes. The
 former `{"error": "not_found", "agent_id"}` payload violated the declared
 success schema and was removed to prevent strict clients from rejecting the

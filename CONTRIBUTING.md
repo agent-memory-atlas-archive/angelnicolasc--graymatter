@@ -36,7 +36,7 @@ inert inside the workspace (go.work governs toolchain selection there), but it
 means someone running `go install github.com/angelnicolasc/graymatter/cmd/graymatter@latest`
 on an older Go gets a binary linked against a patched standard library rather
 than whatever their toolchain happens to ship. When you bump it, bump the
-`go-version` in both workflows to match. CI runs `govulncheck` as a blocking
+`go-version` in CI, release and Maintenance smoke to match. CI runs `govulncheck` as a blocking
 gate on both modules, so a regression here fails the build rather than a report
 nobody reads.
 
@@ -54,6 +54,9 @@ The repo uses a `go.work` workspace with two modules:
 | `github.com/angelnicolasc/graymatter/cmd/graymatter` | `./cmd/graymatter` | CLI, TUI, MCP server, REST server, plugins |
 
 Keep them separate. CLI dependencies (bubbletea, cobra, etc.) must not appear in the root `go.mod`.
+
+For version alignment, release validation, signed tags and publication checks,
+see [Publishing a release](docs/releasing.md).
 
 ---
 

@@ -31,6 +31,13 @@ jobs:
             go.sum
             cmd/graymatter/go.sum
 
+      # Release preparation may require a root tag that is not published yet.
+      - name: Build against the checked-out library
+        working-directory: cmd/graymatter
+        env:
+          GOWORK: "off"
+        run: go mod edit -replace github.com/angelnicolasc/graymatter=../..
+
       # One target per step so a crash in the first does not hide the others'
       # status, and so the log shows exactly which target broke.
       - name: Fuzz Tokenize (60s)

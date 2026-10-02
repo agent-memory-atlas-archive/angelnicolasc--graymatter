@@ -8,6 +8,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+---
+
+## [0.20.0] - 2026-10-02
+
 ### Added
 
 - **Memory workbench with six terminal views.** Memory, Recall, Activity, Graph, Usage and Status share a command palette, responsive list/inspector layouts, explicit focus, dark/light/terminal themes and optional mouse navigation. Recall inspection leaves access counts, learned aliases and recall hooks unchanged. Exact-ID curation rejects stale selections; revision commits the replacement and source retirement together. Read-only sessions block mutations at the store boundary and do not start a daemon.
@@ -43,17 +47,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Release checks now reject mismatched versions before publishing.** Preflight validates release metadata and the CLI's pinned core dependency, and the standalone install smoke checks both the binary version and linked library against the tag without local replacements. CI jobs that test source checkouts apply the local core replacement before Go commands, including scheduled fuzz, mutation, coverage and release snapshot checks.
+
 - **Standard `graymatter doctor` no longer writes or removes a fixed-name probe.** Setup diagnostics open `gray.db` read-only with a private inert vector backend, never run the executable found on PATH, and report incomplete store or graph observations instead of presenting them as empty. The additive JSON fields `status`, `diagnostic_mode`, `readiness`, and `data_dir_writability` distinguish observed checks from client readiness. Existing `ok` and check fields remain. A missing data directory still exits successfully with a warning; filesystem and database failures are surfaced. The special doctor modes keep their separate runtime or output-file contracts.
 
 - **The CLI now requires `golang.org/x/text v0.39.0`, which fixes [GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970).** This dependency update applies independently of the selected hook policy; lexical selection also rejects malformed UTF-8 before normalization. The module graph advances `golang.org/x/sync` to v0.21.0 without raising the CLI's minimum Go version.
 
 ### Notes
 
-- **Confidence preference remains disabled by default.** These options are Unreleased and unavailable in v0.19.1. This first compatible delivery keeps product and low-level weight zero, preserves old RPC/REST ranking and leaves #126 open. A positive product default requires notice in an actually published minor release and a later promotion after frozen calibration and validation gates. Explicit zero remains the legacy ranking opt-out and never disables a requested filter. An Unreleased entry is not a published rollout notice.
+- **Confidence preference remains disabled by default.** The new options are available in v0.20.0 and absent from v0.19.1. This release keeps product and low-level weight zero, preserves old RPC/REST ranking and leaves #126 open. A positive product default requires explicit notice in a published minor release and promotion in a later minor release after frozen calibration and validation gates. This release does not announce a positive default. Explicit zero remains the legacy ranking opt-out and never disables a requested filter.
 
 - **Lexical hook selection remains experimental while conflict coverage and everyday use are evaluated for a future default change.** It can omit a supporting fact or one side of a disagreement, and recalling the larger pool updates access metadata even for candidates omitted from the packet. Existing explicit policy choices are preserved.
 
-- **A future `checkpoint_resume` default of `on_missing: "empty"` is conditional on real-client validation.** v0.20.0 keeps `"error"` as the default. A change in v0.21.0 may proceed only after a successful OpenChamber/OpenCode smoke and prior-minor notice in the released changelog and `docs/api-stability.md`. If the client rejects the union schema, apply and validate the documented fallback before publishing v0.20.0, keep the default as `"error"`, and defer the default change. Explicit `"error"` remains accepted throughout v0.x.
+- **Advance notice: a future `checkpoint_resume` default of `on_missing: "empty"` is conditional on real-client validation.** v0.20.0 keeps `"error"` as the default. A change in v0.21.0 may proceed only after a successful OpenChamber/OpenCode smoke and publication of this prior-minor notice and the matching notice in `docs/api-stability.md`. If the client rejects the union schema, apply and validate the documented fallback before publishing v0.20.0, keep the default as `"error"`, and defer the default change. Callers that require absence to remain an error should pass `on_missing: "error"` explicitly; that value remains accepted throughout v0.x.
 
 ---
 
@@ -1305,7 +1311,8 @@ See [`docs/api-stability.md`](docs/api-stability.md) for the list of stable publ
 
 See [`docs/api-stability.md`](docs/api-stability.md) for the list of stable public identifiers and the compatibility promise for the v0.x series.
 
-[Unreleased]: https://github.com/angelnicolasc/graymatter/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/angelnicolasc/graymatter/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/angelnicolasc/graymatter/compare/v0.19.1...v0.20.0
 [0.12.1]: https://github.com/angelnicolasc/graymatter/releases/tag/v0.12.1
 [0.12.0]: https://github.com/angelnicolasc/graymatter/releases/tag/v0.12.0
 [0.11.1]: https://github.com/angelnicolasc/graymatter/releases/tag/v0.11.1

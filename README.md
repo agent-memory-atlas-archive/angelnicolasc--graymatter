@@ -188,8 +188,7 @@ claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
 ```
 
 To prepare only the current project's memory directory before a session, use
-`graymatter init --store-only` in a build containing this Unreleased change;
-the v0.19.1 binaries listed below do not include it. It creates
+`graymatter init --store-only` (available since v0.20.0). It creates
 `.graymatter/MEMORY.md` if needed and leaves an existing regular
 `.graymatter/gray.db` untouched. It does not
 write client configs, instructions or hooks, change `PATH`, open the database,
@@ -259,13 +258,13 @@ scoop install graymatter
 
 ```bash
 # Linux (x86_64)
-curl -sSL https://github.com/angelnicolasc/graymatter/releases/download/v0.19.1/graymatter_0.19.1_linux_amd64.tar.gz | tar -xz && sudo mv graymatter /usr/local/bin/
+curl -sSL https://github.com/angelnicolasc/graymatter/releases/download/v0.20.0/graymatter_0.20.0_linux_amd64.tar.gz | tar -xz && sudo mv graymatter /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -sSL https://github.com/angelnicolasc/graymatter/releases/download/v0.19.1/graymatter_0.19.1_darwin_arm64.tar.gz | tar -xz && sudo mv graymatter /usr/local/bin/
+curl -sSL https://github.com/angelnicolasc/graymatter/releases/download/v0.20.0/graymatter_0.20.0_darwin_arm64.tar.gz | tar -xz && sudo mv graymatter /usr/local/bin/
 
 # Windows (PowerShell)
-iwr https://github.com/angelnicolasc/graymatter/releases/download/v0.19.1/graymatter_0.19.1_windows_amd64.zip -OutFile graymatter.zip
+iwr https://github.com/angelnicolasc/graymatter/releases/download/v0.20.0/graymatter_0.20.0_windows_amd64.zip -OutFile graymatter.zip
 Expand-Archive graymatter.zip -DestinationPath .
 ```
 </details>
@@ -458,10 +457,12 @@ graymatter bench                     # audit published numbers (--hooks, --store
 graymatter context-sync              # managed context block (opt-in)
 ```
 
-### Confidence options (Unreleased)
+<a id="confidence-options-unreleased"></a>
 
-Implemented in this change; these options are unavailable in v0.19.1. A label is the
-writer's declaration, not verification performed by GrayMatter:
+### Confidence options
+
+Available since v0.20.0. A label is the writer's declaration, not verification
+performed by GrayMatter:
 `unverified < inferred < verified`. New writes validate exact labels and commit
 the label with the fact's text and ID. Omitted add labels remain legacy inferred.
 An omitted revision label takes the weakest live target confidence, capped at
@@ -491,8 +492,8 @@ confidence receipts. Custom vector backends need an eligible-ID or explicit
 exhaustion capability for complete filtered search. Unsupported daemon options
 return an update/restart error. `--shared` and `--all` are mutually exclusive;
 explain supports a single agent-scoped query and cannot combine with those
-flags or batch. See [the full contract](docs/AGENTS.md#confidence-options-unreleased)
-and [compatibility and rollout](docs/api-stability.md#confidence-options-unreleased).
+flags or batch. See [the full contract](docs/AGENTS.md#confidence-options)
+and [compatibility and rollout](docs/api-stability.md#confidence-options).
 
 ---
 
@@ -682,4 +683,4 @@ It is exactly one thing: **the missing stateful layer for Go agents**, packaged 
 
 ---
 
-*GrayMatter — v0.19.1 — September 2026*
+*GrayMatter — v0.20.0 — October 2026*

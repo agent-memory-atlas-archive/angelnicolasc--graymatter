@@ -60,8 +60,8 @@ claude mcp add --scope user --transport stdio graymatter -- graymatter mcp serve
 ```
 
 If global instructions and MCP registration already exist, a new project's
-local memory directory can be prepared without rewriting either. This
-Unreleased flag requires a build containing it; v0.19.1 does not:
+local memory directory can be prepared without rewriting either. The
+`--store-only` flag is available since v0.20.0:
 
 ```sh
 graymatter init --store-only --quiet

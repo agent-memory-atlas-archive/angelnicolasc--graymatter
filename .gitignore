@@ -6,6 +6,7 @@ dist/
 /vectors/
 *.md.local
 go.work.sum
+__pycache__/
 
 # Coverage profiles written by the CI commands in CONTRIBUTING.md
 coverage*.out

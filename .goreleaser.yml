@@ -48,7 +48,10 @@ checksum:
 # release job refuses to start without it rather than discovering the problem
 # after the binaries are already uploaded.
 brews:
-  - repository:
+  - commit_author:
+      name: angelnicolasc
+      email: 108889887+angelnicolasc@users.noreply.github.com
+    repository:
       owner: angelnicolasc
       name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
@@ -59,7 +62,10 @@ brews:
     skip_upload: auto
 
 scoops:
-  - repository:
+  - commit_author:
+      name: angelnicolasc
+      email: 108889887+angelnicolasc@users.noreply.github.com
+    repository:
       owner: angelnicolasc
       name: scoop-bucket
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
@@ -68,7 +74,10 @@ scoops:
     license: MIT
 
 nix:
-  - repository:
+  - commit_author:
+      name: angelnicolasc
+      email: 108889887+angelnicolasc@users.noreply.github.com
+    repository:
       owner: angelnicolasc
       name: nur-packages
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"

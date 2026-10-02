@@ -33,7 +33,7 @@ your editor — done.
 
     ```bash
     # Linux (x86_64)
-    curl -sSL https://github.com/angelnicolasc/graymatter/releases/download/v0.13.1/graymatter_0.13.1_linux_amd64.tar.gz | tar -xz && sudo mv graymatter /usr/local/bin/
+    curl -sSL https://github.com/angelnicolasc/graymatter/releases/download/v0.20.0/graymatter_0.20.0_linux_amd64.tar.gz | tar -xz && sudo mv graymatter /usr/local/bin/
     ```
   </TabItem>
 </Tabs>
@@ -77,8 +77,8 @@ your editor — done.
 
 If Claude already has GrayMatter's MCP server at user scope and can read your
 global memory instructions, you can prepare a new project's local store
-without repeating client setup. This Unreleased flag requires a build that
-includes it; the v0.19.1 binaries do not:
+without repeating client setup. The `--store-only` flag is available since
+v0.20.0:
 
 ```bash
 graymatter init --store-only --quiet

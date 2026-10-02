@@ -32,12 +32,15 @@ Seven tools are registered by `graymatter mcp serve` (see [`cmd/graymatter/inter
 
 `memory_reflect` additionally accepts `confidence` on `add` and `update`.
 
-### Confidence options (Unreleased)
+<a id="confidence-options-unreleased"></a>
 
-The options below are implemented in this change and absent from v0.19.1. Their
-first delivery keeps preference disabled by default. A positive product default
-requires notice in a published minor release, followed by a later minor release
-and successful frozen quality gates. An Unreleased entry is not that notice.
+### Confidence options
+
+The options below are available since v0.20.0 and absent from v0.19.1. Product
+and low-level confidence weights remain zero by default. A positive product
+default requires explicit notice in a published minor release, followed by
+promotion in a later minor release after successful frozen quality gates.
+v0.20.0 does not announce a positive default.
 
 Labels are exact strings: `unverified < inferred < verified`. They describe the
 writer's stance; GrayMatter does not establish truth or assign probabilities.
@@ -178,8 +181,9 @@ Every success result carries **both** a `structuredContent` object (declared in 
 { "found": false, "agent_id": "migration-agent" }
 // text: "No checkpoint saved for agent \"migration-agent\" yet."
 // Without on_missing the default "error" keeps the historical isError result
-// above; v0.21.0 flips the default to "empty". Storage and daemon failures
-// stay prose-only errors in both modes.
+// above. A possible v0.21.0 default of "empty" depends on real-client validation
+// and the published compatibility notice. Storage and daemon failures stay
+// prose-only errors in both modes.
 
 // memory_reflect — structuredContent
 { "action": "update", "agent": "backend-agent", "ok": true }
@@ -391,6 +395,14 @@ audited later. Ordinary decay and pruning collect it in due course.
 ### `checkpoint_save` / `checkpoint_resume` — session continuity
 
 Use for long-running tasks that might span multiple sessions or be interrupted.
+
+Since v0.20.0, `checkpoint_resume` accepts `on_missing: "empty"` to return a
+successful `{"found": false, "agent_id"}` result when no checkpoint exists.
+The default remains `"error"`; storage, daemon and corrupt-record failures
+remain errors in either mode. A possible default change to `"empty"` in v0.21.0
+is conditional on real-client validation and the published compatibility notice.
+Pass `on_missing: "error"` explicitly if your client depends on absence being
+an error. See [compatibility and rollout](api-stability.md#checkpoint-resume-absence-and-default).
 
 **What checkpoints capture:**
 - A JSON object (string-encoded at the MCP layer) — validated on save, rejected otherwise

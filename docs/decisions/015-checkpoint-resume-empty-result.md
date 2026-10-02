@@ -74,6 +74,60 @@ does. The release gate is a real OpenChamber/OpenCode smoke run against this
 schema — not just the contract tests — and it must pass before v0.20.0 ships,
 because the union is validated on every structured result from that release.
 
+## Real-client release gate — 2026-10-02
+
+**Passed with OpenCode CLI 1.18.18 on Windows.** The installed client ran
+`opencode run --pure --format json` against a locally built v0.20.0 candidate
+from commit `e29a761f900eac74faa72b2afaf3e2111919512a`. Release metadata was
+being prepared separately; the MCP implementation was unchanged from that
+commit. The stdio handshake independently identified the client as
+`opencode` / `1.18.18` and negotiated MCP `2025-11-25`.
+
+This exercised OpenCode's actual tool discovery, dispatch and result
+validation. A deterministic OpenAI-compatible fixture on `127.0.0.1`
+supplied tool-call instructions, avoiding any paid model or credentials.
+OpenCode configuration, data, cache, state, home and the Graymatter store
+were isolated under a temporary directory. Project configuration discovery,
+external skills, plugins, sharing, update checks and model-catalog fetching
+were disabled; only the fixture provider was enabled. Graymatter ran with
+`--no-daemon --dir <temporary-store> mcp serve`, without provider keys and
+with its Ollama probe directed at a closed loopback port. No user settings
+or existing memory stores were changed.
+
+The recorded `tools/list` response contained all seven tools, including
+`checkpoint_resume` with the root-object `oneOf` schema described above.
+The same OpenCode session then performed these operations:
+
+| Case | MCP result | OpenCode result |
+|---|---|---|
+| Missing checkpoint, `on_missing: "empty"` | Successful `structuredContent` with `found: false` and the requested `agent_id` | Tool completed |
+| Save a synthetic checkpoint | Successful structured save result | Tool completed |
+| Resume that checkpoint, `on_missing: "empty"` | Successful structured result with the saved ID, creation time and exact synthetic state | Tool completed |
+| Missing checkpoint, parameter omitted | Text-only `isError: true`, no `structuredContent` | Historical tool error surfaced |
+| Missing checkpoint, explicit `on_missing: "error"` | Text-only `isError: true`, no `structuredContent` | Historical tool error surfaced |
+| Resume the saved checkpoint, parameter omitted | Same successful checkpoint payload | Tool completed |
+
+**Negative control:** a separate run used a transparent stdio recorder that
+changed only the absence response's `found` value from `false` to `true`.
+OpenCode rejected it with MCP error `-32602`, reporting that structured
+content did not match the output schema, including the enum violation and
+failure to match exactly one `oneOf` branch. This confirms that the valid
+cases passed the real client's schema validator rather than bypassing it.
+The production server and its schema were not modified for this control.
+
+Both CLI runs exited successfully after consuming the expected tool results;
+the negative control itself was correctly reported as a tool error. Evidence
+was captured as `valid-mcp.jsonl`, `valid-events.jsonl`,
+`invalid-mcp.jsonl` and `invalid-events.jsonl` in the temporary smoke
+directory. The tested binary's SHA-256 was
+`f1fa958304e3444cadc06628c703c97b725b9a00472c80364c27123411b6793f`.
+
+The v0.20.0 real-client gate is satisfied for this OpenCode version; the
+permissive schema fallback is unnecessary. OpenChamber's graphical surface
+and other client versions were not tested. This evidence does not change
+the v0.20.0 default: `on_missing` remains `"error"`, and any later default
+change still requires the migration notice described above.
+
 ## Consequences
 
 - A session-start caller can opt into `{"found": false}` and stop treating

@@ -20,9 +20,11 @@ This repo **is** a memory system for AI agents. While you work here, you also ge
 
 `memory_reflect` also accepts `confidence` for `add` and `update` only.
 
-## Confidence options (Unreleased)
+<a id="confidence-options-unreleased"></a>
 
-These options are implemented on main and are unavailable in v0.19.1.
+## Confidence options
+
+These options are available since v0.20.0 and are absent from v0.19.1.
 `verified`, `inferred` and `unverified` are the writer's declarations, not
 verification performed by GrayMatter. An omitted label on add remains legacy
 inferred; an omitted label on update is the minimum of inferred and the
@@ -39,7 +41,7 @@ and final score from retrieval metadata and explain, not just the label.
 
 Do not supply confidence on forget/pin/unpin/link, or search options on writes.
 Explicit null, empty labels, unknown labels and incorrect types are errors.
-See [the complete contract](docs/AGENTS.md#confidence-options-unreleased).
+See [the complete contract](docs/AGENTS.md#confidence-options).
 
 ## When to call which
 
@@ -106,7 +108,7 @@ To get both your agent-specific facts and shared facts, issue two `memory_search
 
 ## Working in this codebase
 
-- Go module. Build: `go build ./...`. Tests: `go test ./...`. The CI matrix runs Ubuntu / macOS / Windows × Go 1.22 / 1.23.
+- Go workspace with a library module and a CLI module. Build both with `go build ./...` and `go build ./cmd/graymatter` from the root. Run `go test ./...` at the root and again in `cmd/graymatter/`; the root pattern does not include the nested CLI module. The workspace requires Go 1.25.5 or newer, and CI runs Ubuntu / macOS / Windows × Go 1.25 / 1.26.7.
 - bbolt is single-writer, but daemon mode handles that: a store daemon owns the lock and every `graymatter` process connects to it as a client, so concurrent TUI/MCP/CLI access works. Clients auto-start the daemon and it idle-exits when unused. `--no-daemon` opts out (and reintroduces the lock contention). Resolved [issue #8](https://github.com/angelnicolasc/graymatter/issues/8).
 
 ## More
