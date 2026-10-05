@@ -40,7 +40,7 @@ func TestUpsertInstructions_CreatesFile(t *testing.T) {
 		"| `checkpoint_save` | `agent_id` | `state` |",
 		"| `checkpoint_resume` | `agent_id` | `on_missing`: `\"error\"` (default) or `\"empty\"` when no checkpoint is ordinary control flow |",
 		"`agent_id` is canonical for every tool",
-		"`agent_id` wins when both are set",
+		"`agent_id` wins when both are valid",
 	} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("created file missing %q", want)
@@ -581,13 +581,13 @@ func TestInstructionsBlockBudget(t *testing.T) {
 // side is pinned by TestToolDefinitionContract in internal/mcp; this pins the
 // block side to the same contract without hardcoding the tool list: tool names
 // are derived from the MCP registrations in internal/mcp/server.go, the
-// reflect anyOf shape is read from the real RawInputSchema JSON, and the
+// reflect flat schema is read from the real RawInputSchema JSON, and the
 // handshake briefing is read from internal/mcp/instructions.go. Adding a new
 // tool and updating the MCP contract test turns this red while the briefing is
 // stale.
 //
 // Scope note: the structural/schema parts (tool census, RawInputSchema
-// properties/required/anyOf/oneOf, deprecation marker, precedence wording) are
+// properties/required/root combinators, deprecation marker, precedence wording) are
 // checked directly against the real schema and registrations. The prose
 // assertions on the generated block and handshake are focused regression
 // anchors, not a general semantic diff of the whole briefing — wording may
@@ -657,52 +657,61 @@ func TestInstructionsBlock_ToolCensusAndReflectAnchors(t *testing.T) {
 	// and decode it here so a schema edit moves this test with it.
 	rawJSON := extractReflectRawSchema(t, string(serverSrc))
 	var schema struct {
+		Type       string `json:"type"`
 		Properties map[string]struct {
-			Description string `json:"description"`
+			Description string   `json:"description"`
+			Type        string   `json:"type"`
+			MinLength   int      `json:"minLength"`
+			Enum        []string `json:"enum"`
 		} `json:"properties"`
-		Required []string `json:"required"`
-		AnyOf    []struct {
-			Required []string `json:"required"`
-		} `json:"anyOf"`
-		RawOneOf json.RawMessage `json:"oneOf"`
+		Required             []string        `json:"required"`
+		RawAnyOf             json.RawMessage `json:"anyOf"`
+		RawOneOf             json.RawMessage `json:"oneOf"`
+		RawAllOf             json.RawMessage `json:"allOf"`
+		AdditionalProperties *bool           `json:"additionalProperties"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &schema); err != nil {
 		t.Fatalf("decode reflect RawInputSchema: %v", err)
 	}
-	for _, prop := range []string{"action", "agent_id", "agent", "text", "target"} {
-		if _, ok := schema.Properties[prop]; !ok {
+	if schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+		t.Error("reflect schema must remain an object with additionalProperties:false")
+	}
+	if len(schema.Properties) != 6 {
+		t.Errorf("reflect schema has %d properties, want 6", len(schema.Properties))
+	}
+	for _, prop := range []string{"action", "agent_id", "agent", "text", "target", "confidence"} {
+		if property, ok := schema.Properties[prop]; !ok {
 			t.Errorf("reflect schema missing property %q", prop)
+		} else if property.Type != "string" {
+			t.Errorf("reflect property %q must remain a string", prop)
 		}
 	}
 	if len(schema.Required) != 1 || schema.Required[0] != "action" {
-		t.Errorf("reflect schema required = %v, want [action] with agent identity in anyOf", schema.Required)
+		t.Errorf("reflect schema required = %v, want [action] with agent identity required at runtime", schema.Required)
 	}
-	if len(schema.RawOneOf) != 0 {
-		t.Error("reflect schema must use anyOf (at least one, both allowed), not oneOf (exactly one)")
-	}
-	if len(schema.AnyOf) != 2 {
-		t.Fatalf("reflect schema anyOf has %d branches, want 2 (agent_id / agent)", len(schema.AnyOf))
-	}
-	sawID, sawAlias := false, false
-	for _, branch := range schema.AnyOf {
-		if len(branch.Required) == 1 {
-			switch branch.Required[0] {
-			case "agent_id":
-				sawID = true
-			case "agent":
-				sawAlias = true
-			}
+	for keyword, raw := range map[string]json.RawMessage{"anyOf": schema.RawAnyOf, "oneOf": schema.RawOneOf, "allOf": schema.RawAllOf} {
+		if len(raw) != 0 {
+			t.Errorf("reflect input schema must remain flat without root %s", keyword)
 		}
 	}
-	if !sawID || !sawAlias {
-		t.Errorf("reflect anyOf must offer the agent_id and agent alternatives (got id=%v alias=%v)", sawID, sawAlias)
+	wantActions := []string{"add", "update", "forget", "link", "pin", "unpin"}
+	if strings.Join(schema.Properties["action"].Enum, ",") != strings.Join(wantActions, ",") {
+		t.Errorf("reflect action enum = %v, want %v", schema.Properties["action"].Enum, wantActions)
+	}
+	for _, key := range []string{"agent_id", "agent"} {
+		if schema.Properties[key].MinLength != 1 {
+			t.Errorf("reflect %s must reject empty strings in the schema", key)
+		}
+		if !strings.Contains(schema.Properties[key].Description, "required at runtime") {
+			t.Errorf("reflect %s must document runtime identity validation", key)
+		}
 	}
 	agentDesc := schema.Properties["agent"].Description
 	if !strings.Contains(strings.ToLower(agentDesc), "deprecated") {
 		t.Error("reflect schema must mark `agent` deprecated")
 	}
 	if !strings.Contains(agentDesc, "agent_id wins") {
-		t.Error("reflect schema must document that `agent_id` wins when both are set")
+		t.Error("reflect schema must document that `agent_id` wins when both are valid")
 	}
 
 	// The block must teach that same contract: canonical agent_id, deprecated
@@ -717,7 +726,12 @@ func TestInstructionsBlock_ToolCensusAndReflectAnchors(t *testing.T) {
 		t.Error("generated block must say `agent` is also accepted (canonical agent_id, deprecated alias)")
 	}
 	if !strings.Contains(block, "agent_id` wins") && !strings.Contains(block, "agent_id wins") {
-		t.Error("generated block must say `agent_id` wins when both are set")
+		t.Error("generated block must say `agent_id` wins when both are valid")
+	}
+	for _, want := range []string{"at least one is required at runtime", "Each supplied", "non-empty string", "not only whitespace", "when both are valid", "namespace bytes are preserved"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("generated block must teach runtime identity contract: missing %q", want)
+		}
 	}
 	for _, stale := range []string{"exactly one of", "Mixing them up fails validation", "`agent`, not `agent_id`"} {
 		if strings.Contains(block, stale) {
@@ -825,7 +839,7 @@ func TestInstructionsBlock_DocsAnchors(t *testing.T) {
 	// (b) Canonical reflect contract in both docs.
 	for _, d := range docs {
 		t.Run(d.name+" reflect", func(t *testing.T) {
-			for _, want := range []string{"agent_id", "canonical", "deprecated", "anyOf", "at least one", "wins"} {
+			for _, want := range []string{"agent_id", "canonical", "deprecated", "flat", "runtime", "non-empty", "whitespace", "at least one", "wins"} {
 				if !strings.Contains(d.src, want) {
 					t.Errorf("%s missing reflect anchor %q", d.name, want)
 				}
@@ -834,7 +848,7 @@ func TestInstructionsBlock_DocsAnchors(t *testing.T) {
 				t.Errorf("%s must say `agent` is a deprecated alias", d.name)
 			}
 			if !strings.Contains(d.src, "agent_id` wins") && !strings.Contains(d.src, "agent_id wins") {
-				t.Errorf("%s must say `agent_id` wins when both are set", d.name)
+				t.Errorf("%s must say `agent_id` wins when both are valid", d.name)
 			}
 			for _, stale := range []string{"exactly one of", "`agent`, not `agent_id`", "Mixing them up fails validation"} {
 				if strings.Contains(d.src, stale) {

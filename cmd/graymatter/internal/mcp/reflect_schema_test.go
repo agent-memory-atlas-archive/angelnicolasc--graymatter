@@ -3,15 +3,15 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 // TestMemoryReflect_AgentIDCanonical pins issue #77 step 3 (the canonical
-// flip): agent_id is the canonical spelling, agent is a documented deprecated
-// alias, and the at-least-one requirement (both allowed, agent_id wins) is expressed as anyOf over two
-// required-lists because a flat required list would break one caller class or
-// the other.
+// flip) and issue #139: both spellings validate against a flat input object;
+// the handler enforces the at-least-one requirement before backend access.
 func TestMemoryReflect_AgentIDCanonical(t *testing.T) {
 	byName := listToolDefs(t)
 	tool, ok := byName["memory_reflect"]
@@ -22,9 +22,11 @@ func TestMemoryReflect_AgentIDCanonical(t *testing.T) {
 	var schema struct {
 		Properties map[string]struct {
 			Description string `json:"description"`
+			Type        string `json:"type"`
+			MinLength   int    `json:"minLength"`
 		} `json:"properties"`
-		Required []string          `json:"required"`
-		AnyOf    []json.RawMessage `json:"anyOf"`
+		Required             []string `json:"required"`
+		AdditionalProperties bool     `json:"additionalProperties"`
 	}
 	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
 		t.Fatalf("decode inputSchema: %v", err)
@@ -43,40 +45,83 @@ func TestMemoryReflect_AgentIDCanonical(t *testing.T) {
 		t.Errorf("agent_id description %q must state the canonical role", canonProp.Description)
 	}
 
-	// Canonical flip: required carries only action; the agent requirement is
-	// the anyOf branches, so callers spelling either name (or both) validate.
-	required := map[string]bool{}
-	for _, r := range schema.Required {
-		required[r] = true
+	if !reflect.DeepEqual(schema.Required, []string{"action"}) {
+		t.Errorf("required = %v, want only action", schema.Required)
 	}
-	if !required["action"] {
-		t.Error("action must be required")
+	if schema.AdditionalProperties {
+		t.Error("additionalProperties must remain false")
 	}
-	if required["agent"] || required["agent_id"] {
-		t.Error("neither agent spelling belongs in required; the at-least-one rule lives in anyOf")
+	if len(schema.Properties) != 6 {
+		t.Errorf("properties count = %d, want 6", len(schema.Properties))
 	}
-	if len(schema.AnyOf) != 2 {
-		t.Fatalf("anyOf has %d branches, want 2 (agent_id / agent)", len(schema.AnyOf))
-	}
-	sawAgentID, sawAgent := false, false
-	for _, branch := range schema.AnyOf {
-		var b struct {
-			Required []string `json:"required"`
+	for _, key := range []string{"action", "agent_id", "agent", "text", "target", "confidence"} {
+		if schema.Properties[key].Type != "string" {
+			t.Errorf("%s must retain string type", key)
 		}
-		if err := json.Unmarshal(branch, &b); err != nil {
-			t.Fatalf("decode anyOf branch: %v", err)
+	}
+	for _, key := range []string{"agent_id", "agent"} {
+		prop := schema.Properties[key]
+		if prop.MinLength != 1 {
+			t.Errorf("%s.minLength = %d, want 1", key, prop.MinLength)
 		}
-		if len(b.Required) == 1 {
-			switch b.Required[0] {
-			case "agent_id":
-				sawAgentID = true
-			case "agent":
-				sawAgent = true
+		if !strings.Contains(prop.Description, "required at runtime") {
+			t.Errorf("%s must document runtime identity requirement: %s", key, prop.Description)
+		}
+	}
+	if !strings.Contains(tool.Description, "required at runtime") {
+		t.Error("tool description must document runtime identity requirement")
+	}
+}
+
+func TestMemoryReflect_InputSchemaValidatesCallerForms(t *testing.T) {
+	schema := compileInputSchema(t, listToolDefs(t)["memory_reflect"].InputSchema)
+	cases := []struct {
+		name  string
+		args  map[string]any
+		valid bool
+	}{
+		{"canonical", map[string]any{"action": "add", "agent_id": "project"}, true},
+		{"alias", map[string]any{"action": "add", "agent": "project"}, true},
+		{"both", map[string]any{"action": "add", "agent_id": "canonical", "agent": "alias"}, true},
+		{"no identity is runtime checked", map[string]any{"action": "add"}, true},
+		{"whitespace is runtime checked", map[string]any{"action": "add", "agent_id": " \t\n"}, true},
+		{"extra property", map[string]any{"action": "add", "agent_id": "project", "extra": true}, false},
+		{"missing action", map[string]any{"agent_id": "project"}, false},
+		{"unknown action", map[string]any{"action": "erase", "agent_id": "project"}, false},
+		{"null action", map[string]any{"action": nil, "agent_id": "project"}, false},
+		{"wrong text type", map[string]any{"action": "add", "agent_id": "project", "text": 7}, false},
+		{"wrong target type", map[string]any{"action": "add", "agent_id": "project", "target": true}, false},
+	}
+	for _, key := range []string{"agent_id", "agent", "confidence"} {
+		for _, value := range []any{nil, float64(7), true, []any{"project"}, map[string]any{"id": "project"}, ""} {
+			args := map[string]any{"action": "add", key: value}
+			cases = append(cases, struct {
+				name  string
+				args  map[string]any
+				valid bool
+			}{key + "/" + fmt.Sprint(value), args, false})
+		}
+	}
+	for _, value := range []string{"verified", "inferred", "unverified"} {
+		cases = append(cases, struct {
+			name  string
+			args  map[string]any
+			valid bool
+		}{"confidence/" + value, map[string]any{"action": "add", "confidence": value}, true})
+	}
+	for _, value := range []string{"unknown", " verified "} {
+		cases = append(cases, struct {
+			name  string
+			args  map[string]any
+			valid bool
+		}{"confidence/" + value, map[string]any{"action": "add", "confidence": value}, false})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := schema.Validate(tc.args); (err == nil) != tc.valid {
+				t.Errorf("schema validation = %v, want valid=%v", err, tc.valid)
 			}
-		}
-	}
-	if !sawAgentID || !sawAgent {
-		t.Errorf("anyOf must offer exactly the agent_id and agent alternatives (got agent_id=%v agent=%v)", sawAgentID, sawAgent)
+		})
 	}
 }
 

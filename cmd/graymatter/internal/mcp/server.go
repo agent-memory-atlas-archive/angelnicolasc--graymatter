@@ -526,19 +526,17 @@ func (s *Server) registerTools() {
 
 	// memory_reflect
 	//
-	// The input schema is hand-authored raw JSON because the contract cannot
-	// be expressed with typed helpers: at least one of agent_id (canonical) or
-	// agent (deprecated alias) is required (both allowed), which is an anyOf over two
-	// required-lists — mcp-go's typed builders only produce flat required
-	// lists, and requiring `agent` here would re-break the caller class the
-	// alias exists for (issue #77, step 3 of the canonical flip).
+	// Keep the input object flat: Claude clients without schema rewriting
+	// exclude tools with a root combinator (issue #139). Both identity spellings
+	// remain optional in the schema for compatibility; the handler requires at
+	// least one and validates every supplied spelling before calling a backend.
 	//
 	// NewTool always seeds InputSchema.Type, and MarshalJSON rejects a tool
 	// carrying both schema forms, so the structured schema is dropped and the
 	// raw one takes its place before registration.
 	reflectTool := mcp.NewTool("memory_reflect",
 		mcp.WithToolTitle("Curate your own memory"),
-		mcp.WithDescription("Curate an agent's memory: add a fact, update (supersede) an existing one, forget, pin or unpin against decay, or link two knowledge-graph nodes. Use it mid-task when you notice a contradiction, finish a task, or learn a durable preference; for a brand-new fact memory_add is simpler. update requires the exact old fact text in target; forget, pin and unpin accept the fact via target or text, with target winning when both are set. Retired facts keep a tombstone receipt in the audit log — nothing is ever hard-deleted. Returns a per-action confirmation."),
+		mcp.WithDescription("Curate an agent's memory: add a fact, update (supersede) an existing one, forget, pin or unpin against decay, or link two knowledge-graph nodes. Supply agent_id or deprecated alias agent: at least one is required at runtime, every supplied identity must be a non-empty string containing non-whitespace characters, and agent_id wins when both are valid. Use it mid-task when you notice a contradiction, finish a task, or learn a durable preference; for a brand-new fact memory_add is simpler. update requires the exact old fact text in target; forget, pin and unpin accept the fact via target or text, with target winning when both are set. Retired facts keep a tombstone receipt in the audit log — nothing is ever hard-deleted. Returns a per-action confirmation."),
 		writeTool(),
 		outputSchemaOf[reflectResult](),
 	)
@@ -553,11 +551,13 @@ func (s *Server) registerTools() {
     },
     "agent_id": {
       "type": "string",
-      "description": "The agent whose memory to modify."
+      "minLength": 1,
+      "description": "The agent whose memory to modify (canonical). Supply this or agent; at least one is required at runtime. Every supplied identity must contain non-whitespace characters. agent_id wins when both are valid; namespace bytes are preserved."
     },
     "agent": {
       "type": "string",
-      "description": "Deprecated alias of agent_id, accepted for compatibility with callers that predate the canonical flip. agent_id wins when both are set."
+      "minLength": 1,
+      "description": "Deprecated alias of agent_id, accepted for compatibility. Supply this or agent_id; at least one is required at runtime. Every supplied identity must contain non-whitespace characters. agent_id wins when both are valid; namespace bytes are preserved."
     },
     "text": {
       "type": "string",
@@ -570,10 +570,6 @@ func (s *Server) registerTools() {
     }
   },
   "required": ["action"],
-  "anyOf": [
-    {"required": ["agent_id"]},
-    {"required": ["agent"]}
-  ],
   "additionalProperties": false
 }`)
 	s.mcpSrv.AddTool(reflectTool, s.confidenceGuard("memory_reflect", s.handleMemoryReflect))
