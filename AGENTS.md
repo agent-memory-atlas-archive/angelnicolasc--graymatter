@@ -12,11 +12,11 @@ This repo **is** a memory system for AI agents. While you work here, you also ge
 | `memory_search_batch` | `agent_id`, `queries` | `top_k` (default `8`), `min_confidence`, `confidence_weight` |
 | `memory_add` | `agent_id`, `text` | `confidence` |
 | `memory_alias` | `agent_id`, `term`, `equivalents` | — |
-| `memory_reflect` | `action` (`add`\|`update`\|`forget`\|`link`\|`pin`\|`unpin`), plus at least one of **`agent_id`** (canonical) or `agent` (deprecated alias; `agent_id` wins when both are set) | `text`, `target` (which one is required depends on `action` — for `forget`/`pin`/`unpin`, either works) |
+| `memory_reflect` | `action` (`add`\|`update`\|`forget`\|`link`\|`pin`\|`unpin`), plus at least one explicit valid **`agent_id`** (canonical) or `agent` (deprecated alias; `agent_id` wins when both are valid) | `text`, `target` (which one is required depends on `action` — for `forget`/`pin`/`unpin`, either works) |
 | `checkpoint_save` | `agent_id` | `state` (JSON-encoded string) |
 | `checkpoint_resume` | `agent_id` | `on_missing` (enum `error`\|`empty`, default `error`) |
 
-> **`memory_reflect` uses `agent_id` (canonical since ADR-014).** The other six also use `agent_id`. The deprecated alias `agent` is still accepted for compatibility; `agent_id` wins when both are set.
+> **`memory_reflect` uses `agent_id` (canonical since ADR-014).** The other six also use `agent_id`. The deprecated alias `agent` is still accepted for compatibility; `agent_id` wins when both are valid. Identity is explicit and required at runtime for both stdio and HTTP. Each supplied identity must be a non-empty string that is not entirely whitespace; an invalid field is rejected even when the other is valid. See [the reflect contract](docs/AGENTS.md#memory_reflect--self-curation).
 
 `memory_reflect` also accepts `confidence` for `add` and `update` only.
 

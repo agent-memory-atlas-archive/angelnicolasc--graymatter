@@ -83,6 +83,38 @@ graymatter mcp serve --http 127.0.0.1:8080
 The HTTP transport requires a bearer token; it lives in
 `<data-dir>/graymatter.http-token`. Network surfaces bind loopback-only.
 
+## Troubleshooting a missing tool
+
+GrayMatter registers seven MCP tools, including `memory_reflect`. A tool can
+appear in the server's `tools/list` response but be absent from the client's
+loaded catalog. Claude Code can exclude a tool whose input schema has a root
+combinator when schema rewriting is unavailable; other tools stay usable.
+See [Claude Code's schema guidance](https://code.claude.com/docs/en/mcp#tool-input-schemas-with-a-root-level-combinator).
+
+1. Inspect the effective MCP registration: executable or HTTP endpoint,
+   arguments, transport, and config scope. Run `--version` on the exact
+   configured executable, rather than assuming the `graymatter` found in your
+   terminal is the same binary. For HTTP, check the binary running the server.
+   Record the client version as well (`claude --version` for Claude Code).
+2. Compare the server's `tools/list` names and `memory_reflect.inputSchema`
+   with the tools the client actually loaded. The corrected input schema is
+   a flat object with `required: ["action"]` and no root `anyOf`, `oneOf`, or
+   `allOf`. Identity remains explicit and mandatory at runtime: supply a valid
+   `agent_id`, or the deprecated `agent` alias. Every supplied identity field
+   must be valid, and `agent_id` wins when both are valid.
+3. Check the client's MCP/server log for an exclusion or schema-validation
+   reason. In Claude Code, inspect the server in `/mcp`; use the debug log if
+   the tool list and loaded catalog differ.
+4. Upgrade the binary actually configured or running the HTTP service, then
+   reconnect the MCP client or start a fresh session to reload discovery. For
+   HTTP clients that cache discovery, refresh or disable that cache during
+   verification. Confirm all seven tools in the refreshed catalog.
+
+If it still fails, report the server and client versions, transport, redacted
+effective config, `tools/list` names/schema, and the relevant exclusion log.
+Remove tokens, credentials, and private paths from those excerpts; memory
+databases are not needed to investigate discovery.
+
 ## One store, many processes
 
 GrayMatter persists to bbolt, a single-writer embedded DB — only one process

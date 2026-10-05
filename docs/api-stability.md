@@ -261,12 +261,25 @@ verified against a live `tools/list` exchange at the time of writing.
 | `memory_alias` | `agent_id`, `term`, `equivalents` | — |
 | `checkpoint_save` | `agent_id` | `state` (string containing a JSON object) |
 | `checkpoint_resume` | `agent_id` | `on_missing` (`"error"` \| `"empty"`, default `"error"`) |
-| `memory_reflect` | `action`, plus at least one of `agent_id` (canonical) or `agent` (deprecated alias; `agent_id` wins when both are set) | `text`, `target` |
+| `memory_reflect` | `action`, plus at least one explicit valid `agent_id` (canonical) or `agent` (deprecated alias; `agent_id` wins when both are valid) | `text`, `target` |
 
 `memory_reflect.action` is an enum: `add`, `update`, `forget`, `link`, `pin`,
-`unpin`. The agent parameter on `memory_reflect` is expressed as a schema
-`anyOf` (at least one of the two spellings is required, both allowed); `agent` is deprecated,
-and when both spellings arrive `agent_id` wins.
+`unpin`. Its input schema is a flat object with `required: ["action"]`, no
+root `anyOf`, `oneOf`, or `allOf`, and `additionalProperties: false`. Both
+identity spellings remain schema-optional so canonical-only and alias-only
+callers can pass client validation. At least one explicit identity is required
+at runtime for both stdio and HTTP; no identity is derived from the working
+directory. An identity-free object passes the schema but returns a tool error
+before any backend call.
+
+Every supplied `agent_id` or `agent` must be a non-empty string that is not
+entirely whitespace. Null, wrong types, empty strings, and whitespace-only
+strings are rejected even when the other field is valid. When both fields are
+valid, `agent_id` wins. Valid identities are not trimmed or normalized:
+`" project "` and `"project"` address distinct namespaces; Unicode and
+`__shared__` are accepted. This hardens malformed inputs that previously could
+fall back to the alias or ignore an invalid alias without changing valid
+callers. See [ADR-014](decisions/014-agent-id-canonical.md).
 
 Since v0.20.0, `confidence` is accepted on reflect `add`/`update` only. Search
 options on writes, confidence on other tools/actions, explicit null, wrong

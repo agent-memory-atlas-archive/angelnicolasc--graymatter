@@ -115,7 +115,9 @@ guidance.
 | ~checkpoint_resume~ | ~agent_id~ | ~on_missing~: ~"error"~ (default) or ~"empty"~ when no checkpoint is ordinary control flow |
 
 ~agent_id~ is canonical for every tool. ~memory_reflect~ also accepts the
-deprecated ~agent~ alias; ~agent_id~ wins when both are set.
+deprecated ~agent~ alias; at least one is required at runtime. Each supplied
+identity must be a non-empty string, not only whitespace;
+~agent_id~ wins when both are valid. Valid namespace bytes are preserved.
 
 Confidence declares ~verified~/~inferred~/~unverified~; GrayMatter does not verify it.
 Omitted add is inferred; update takes the weakest target, capped at inferred.

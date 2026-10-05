@@ -26,9 +26,9 @@ Seven tools are registered by `graymatter mcp serve` (see [`cmd/graymatter/inter
 | `memory_alias` | `agent_id` (string), `term` (string), `equivalents` (string array) | — | Confirmation naming the term and its equivalents |
 | `checkpoint_save` | `agent_id` (string) | `state` (JSON-encoded string) | Confirmation containing the checkpoint ID |
 | `checkpoint_resume` | `agent_id` (string) | `on_missing` (`"error"` \| `"empty"`, default `"error"`) | `Checkpoint "id" restored` + `Created:` (RFC3339) + indented `State:` JSON; by default an error result when none exists — with `on_missing: "empty"` a successful `{"found": false, "agent_id"}` result |
-| `memory_reflect` | `action` (`add`\|`update`\|`forget`\|`link`\|`pin`\|`unpin`), plus at least one of **`agent_id`** (canonical) or `agent` (deprecated alias; `agent_id` wins when both are set) | `text` (string), `target` (string — old fact text for `update`/`forget`/`pin`/`unpin`; target node ID for `link`) | Confirmation string |
+| `memory_reflect` | `action` (`add`\|`update`\|`forget`\|`link`\|`pin`\|`unpin`), plus at least one explicit valid **`agent_id`** (canonical) or `agent` (deprecated alias; `agent_id` wins when both are valid) | `text` (string), `target` (string — old fact text for `update`/`forget`/`pin`/`unpin`; target node ID for `link`) | Confirmation string |
 
-> ℹ️ **`memory_reflect` accepts both `agent_id` (canonical) and `agent` (deprecated alias).** Since the canonical flip ([ADR-014](decisions/014-agent-id-canonical.md)) at least one of the two is required — the schema enforces it as an `anyOf` allowing both — and `agent_id` wins when both are set. New integrations spell it `agent_id`, matching every other tool.
+> ℹ️ **`memory_reflect` accepts both `agent_id` (canonical) and `agent` (deprecated alias).** At least one explicit valid identity is required at runtime, including over stdio. Its flat input schema requires only `action` to preserve alias-only clients; it has no root combinator. When both fields are valid, `agent_id` wins ([ADR-014](decisions/014-agent-id-canonical.md)). New integrations spell it `agent_id`, matching every other tool.
 
 `memory_reflect` additionally accepts `confidence` on `add` and `update`.
 
@@ -313,7 +313,15 @@ Facts marked superseded are dropped before any of this — a fact an agent has c
 
 The most powerful tool. Use it to maintain memory quality over time.
 
-> Parameter is **`agent_id`** (canonical, since ADR-014). `agent` remains accepted as a deprecated alias - the schema expresses this as an `anyOf` requiring at least one of the two (both allowed) - and `agent_id` wins when both are set. New integrations spell it `agent_id`.
+> Parameter is **`agent_id`** (canonical, since ADR-014). `agent` remains accepted as a deprecated alias. Supply at least one explicitly; the server never derives it from the working directory. When both fields are valid, `agent_id` wins. New integrations spell it `agent_id`.
+
+Each supplied identity field must be a non-empty string with at least one
+non-whitespace character. Null, incorrect types, empty strings, or
+whitespace-only strings cause a tool error before any backend call, even if
+the other field is valid. Omit an unused spelling instead of sending it empty.
+Valid values are used unchanged: `" project "` and `"project"` are distinct
+namespaces, and Unicode and `__shared__` work normally. A call with neither
+identity may pass the flat input schema, but the server rejects it at runtime.
 
 | Action | Param meaning of `text` | Param meaning of `target` |
 |--------|-------------------------|---------------------------|

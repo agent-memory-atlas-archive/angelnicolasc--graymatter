@@ -8,6 +8,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- **`memory_reflect` remains discoverable in Claude Code deployments that reject root input-schema combinators** ([#139](https://github.com/angelnicolasc/graymatter/issues/139)). Its input is now a flat object requiring `action`; an explicit valid `agent_id` or deprecated `agent` alias remains mandatory at runtime. Canonical-only and alias-only calls keep working, and `agent_id` wins when both are valid. Every supplied identity is validated before any backend call: null, wrong types, empty strings, and whitespace-only strings are rejected even if the other spelling is valid. Valid namespace values remain unchanged. All six actions and their result contracts are preserved.
+
 ---
 
 ## [0.20.0] - 2026-10-02

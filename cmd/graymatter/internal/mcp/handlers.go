@@ -303,6 +303,36 @@ func (s *Server) handleCheckpointResume(ctx context.Context, req mcp.CallToolReq
 	}, sb.String())
 }
 
+// reflectAgentID validates every supplied spelling before choosing a namespace.
+// Trimming is only a blank check: valid namespace bytes must remain unchanged.
+func reflectAgentID(args map[string]any) (string, error) {
+	var canonical, alias string
+	var present bool
+	for _, key := range []string{"agent_id", "agent"} {
+		raw, exists := args[key]
+		if !exists {
+			continue
+		}
+		present = true
+		value, ok := raw.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("%s must be a non-empty string, not only whitespace", key)
+		}
+		if key == "agent_id" {
+			canonical = value
+		} else {
+			alias = value
+		}
+	}
+	if !present {
+		return "", errors.New("agent_id (or deprecated alias agent) is required")
+	}
+	if canonical != "" {
+		return canonical, nil
+	}
+	return alias, nil
+}
+
 func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 
@@ -310,15 +340,11 @@ func (s *Server) handleMemoryReflect(ctx context.Context, req mcp.CallToolReques
 	if !ok || action == "" {
 		return toolError("action is required")
 	}
-	// Since the canonical flip (issue #77 step 3, ADR-014) agent_id is the
-	// canonical spelling and wins when both are set; `agent` remains accepted
-	// as a deprecated alias so pre-flip callers keep working unchanged.
-	agentID, ok := getString(args, "agent_id")
-	if !ok || agentID == "" {
-		agentID, _ = getString(args, "agent")
-	}
-	if agentID == "" {
-		return toolError("agent_id is required")
+	// agent_id wins when both are valid; a malformed supplied spelling must
+	// never silently redirect an operation to the other namespace.
+	agentID, err := reflectAgentID(args)
+	if err != nil {
+		return toolError(err.Error())
 	}
 	// text and target are validated per-action below: forget works with
 	// either one, so neither can be globally required (see PR #10).
