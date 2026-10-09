@@ -10,6 +10,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- **Docker images download v0.20.0 instead of v0.15.0.** Download errors stop the build before extraction. Native amd64 and arm64 CI verifies the release version and all seven MCP tools in direct and daemon modes.
+- **The CLI toolchain pin, CI, and release builds use Go 1.26.9.** This fixes the standard-library vulnerabilities reported by `govulncheck` for Go 1.26.7, including [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617). The existing v0.20.0 download archives are unchanged; newly compiled binaries built with the patched toolchain receive these fixes.
+
 - **`memory_reflect` remains discoverable in Claude Code deployments that reject root input-schema combinators** ([#139](https://github.com/angelnicolasc/graymatter/issues/139)). Its input is now a flat object requiring `action`; an explicit valid `agent_id` or deprecated `agent` alias remains mandatory at runtime. Canonical-only and alias-only calls keep working, and `agent_id` wins when both are valid. Every supplied identity is validated before any backend call: null, wrong types, empty strings, and whitespace-only strings are rejected even if the other spelling is valid. Valid namespace values remain unchanged. All six actions and their result contracts are preserved.
 
 ---

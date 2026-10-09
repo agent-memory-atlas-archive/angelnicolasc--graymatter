@@ -75,8 +75,8 @@ func TestActionPins(t *testing.T) {
 	}
 	re := regexp.MustCompile("(?m)^\\s+(?:-\\s+)?uses: ([A-Za-z0-9_./-]+)@([^\\r\\n]+)$")
 	files, err := filepath.Glob(filepath.Join(workflowDir, "*.yml"))
-	if err != nil || len(files) != 6 {
-		t.Fatalf("expected six workflows, got %d: %v", len(files), err)
+	if err != nil || len(files) != 7 {
+		t.Fatalf("expected seven workflows, got %d: %v", len(files), err)
 	}
 	seen := make(map[string]bool)
 	for _, file := range files {
@@ -137,12 +137,12 @@ func TestCoverageUnionContract(t *testing.T) {
 	goVersion := "$" + "{{ matrix.go }}"
 	contains(t, body,
 		"os: [ubuntu-latest, macos-latest, windows-latest]",
-		"go: [\"1.25\", \"1.26.7\"]",
+		"go: [\"1.25\", \"1.26.9\"]",
 		"name: coverage-"+os+"-go"+goVersion,
 		"coverage-core."+os+".go"+goVersion+".out",
 		"coverage-cli."+os+".go"+goVersion+".out",
 		"for os in ubuntu-latest macos-latest windows-latest; do",
-		"for version in 1.25 1.26.7; do",
+		"for version in 1.25 1.26.9; do",
 		"if [ ! -s \"$profile\" ]; then",
 		"merge-multiple: true",
 		"digest-mismatch: error",
@@ -161,7 +161,7 @@ func TestMaintenanceSmokeSafetyAndScope(t *testing.T) {
 		"on:\n  pull_request:\n  workflow_dispatch:",
 		"permissions:\n  contents: read",
 		"  snapshot:", "  docs:", "  fuzz:", "  artifacts-mutation:",
-		"fetch-depth: 0", "go-version: \"1.26.7\"", "version: v2.17.1",
+		"fetch-depth: 0", "go-version: \"1.26.9\"", "version: v2.17.1",
 		"install-only: true", "python3 .github/scripts/check_goreleaser.py", "args: release --snapshot --clean --skip=sign",
 		"(\"linux\", \"amd64\"), (\"linux\", \"arm64\")",
 		"(\"darwin\", \"amd64\"), (\"darwin\", \"arm64\")",

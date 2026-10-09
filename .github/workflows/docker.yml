@@ -1,0 +1,62 @@
+name: Docker
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+      - .github/scripts/container_smoke.py
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/docker.yml
+      - .github/scripts/container_smoke.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Docker (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Build the published archive selected by Dockerfile, on each native CPU.
+      - name: Build image
+        env:
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE: graymatter:smoke-${{ matrix.arch }}
+        run: docker build --platform "$PLATFORM" --tag "$IMAGE" .
+
+      - name: Verify version and MCP in both store modes
+        env:
+          PLATFORM: linux/${{ matrix.arch }}
+          IMAGE: graymatter:smoke-${{ matrix.arch }}
+        run: |
+          mkdir -p smoke-results
+          python3 .github/scripts/container_smoke.py "$IMAGE" "$PLATFORM" direct --dockerfile Dockerfile > smoke-results/direct.json
+          python3 .github/scripts/container_smoke.py "$IMAGE" "$PLATFORM" daemon --dockerfile Dockerfile > smoke-results/daemon.json
+
+      - name: Preserve MCP records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-smoke-${{ matrix.arch }}
+          path: smoke-results/
+          if-no-files-found: ignore
+          archive: true
+          retention-days: 14
