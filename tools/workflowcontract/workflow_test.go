@@ -75,8 +75,8 @@ func TestActionPins(t *testing.T) {
 	}
 	re := regexp.MustCompile("(?m)^\\s+(?:-\\s+)?uses: ([A-Za-z0-9_./-]+)@([^\\r\\n]+)$")
 	files, err := filepath.Glob(filepath.Join(workflowDir, "*.yml"))
-	if err != nil || len(files) != 6 {
-		t.Fatalf("expected six workflows, got %d: %v", len(files), err)
+	if err != nil || len(files) != 7 {
+		t.Fatalf("expected seven workflows, got %d: %v", len(files), err)
 	}
 	seen := make(map[string]bool)
 	for _, file := range files {

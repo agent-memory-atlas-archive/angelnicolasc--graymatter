@@ -2,6 +2,8 @@ graymatter.exe
 /graymatter
 dist/
 .graymatter/
+# Internal audit reports are local-only.
+/docs/audits/
 *.db
 /vectors/
 *.md.local
