@@ -46,6 +46,13 @@ jobs:
       - name: Check GoReleaser configuration
         run: python3 .github/scripts/check_goreleaser.py
 
+      - name: Install and verify the Nix hash tool
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y nix-bin
+          nix-hash --type sha256 --flat --base32 /dev/null
+
       - name: Build snapshot without publishing
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
@@ -77,6 +84,15 @@ jobs:
                   raise SystemExit(f"missing or empty snapshot archive: {path}")
           PY
           test -s dist/checksums.txt
+
+      - name: Verify package-manager manifests
+        run: |
+          set -euo pipefail
+          test -s dist/homebrew/Formula/graymatter.rb
+          test -s dist/scoop/graymatter.json
+          test -s dist/nix/pkgs/graymatter/default.nix
+          python3 -m json.tool dist/scoop/graymatter.json > /dev/null
+          nix-instantiate --parse dist/nix/pkgs/graymatter/default.nix > /dev/null
 
   docs:
     name: Documentation dry run

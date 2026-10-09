@@ -186,7 +186,7 @@ func TestProductionGuards(t *testing.T) {
 	docs := read(t, "deploy-docs")
 	fuzz := read(t, "fuzz")
 	mutation := read(t, "mutation")
-	contains(t, release, "on:\n  push:\n    tags:", "Package-manager taps need their own credential",
+	contains(t, release, "on:\n  push:\n    tags:", "Preserve package-manager manifests for signed publication",
 		"Publish the CLI submodule tag", "Warm the public proxy and wait for the checksum database",
 		"version: v2.17.1", "README must advertise the release being published")
 	absent(t, release, "  pull_request:")

@@ -42,11 +42,8 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
-# Homebrew, Scoop and Nix publish into three separate repositories, and the
-# workflow's default GITHUB_TOKEN is scoped to this one — it cannot write to
-# any of them. Each publisher therefore takes its own credential, and the
-# release job refuses to start without it rather than discovering the problem
-# after the binaries are already uploaded.
+# Generate package-manager manifests for signed publication from a maintainer's
+# checkout. API-based publishers do not use the maintainer's Git signing key.
 brews:
   - commit_author:
       name: angelnicolasc
@@ -54,12 +51,11 @@ brews:
     repository:
       owner: angelnicolasc
       name: homebrew-tap
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     directory: Formula
     homepage: https://github.com/angelnicolasc/graymatter
     description: "Persistent memory for AI agents. Single binary, zero infrastructure."
     license: MIT
-    skip_upload: auto
+    skip_upload: true
 
 scoops:
   - commit_author:
@@ -68,10 +64,10 @@ scoops:
     repository:
       owner: angelnicolasc
       name: scoop-bucket
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/angelnicolasc/graymatter
     description: "Persistent memory for AI agents. Single binary, zero infrastructure."
     license: MIT
+    skip_upload: true
 
 nix:
   - commit_author:
@@ -80,10 +76,10 @@ nix:
     repository:
       owner: angelnicolasc
       name: nur-packages
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: https://github.com/angelnicolasc/graymatter
     description: "Persistent memory for AI agents. Single binary, zero infrastructure."
     license: mit
+    skip_upload: true
 
 changelog:
   sort: asc

@@ -110,33 +110,21 @@ jobs:
       - name: Check GoReleaser configuration before publishing
         run: python3 .github/scripts/check_goreleaser.py
 
+      - name: Install and verify the Nix hash tool
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y nix-bin
+          nix-hash --type sha256 --flat --base32 /dev/null
+
       # cmd/graymatter is its own module, so Go resolves its versions from tags
       # prefixed with the module path. Without them the CLI had no published
       # version at all: `@vX.Y.Z` failed with "unknown revision", and `@latest`
       # — the command printed on every release page — resolved to a
       # pseudo-version of whatever was on main, not to the release being read.
       #
-      # Pushed after the changelog gate so a release that is going to fail does
-      # not leave a version behind on the Go proxy, which never forgets one.
-      # The tag does not start with "v", so it cannot re-trigger this workflow.
-      # Homebrew, Scoop and Nix push into three repositories this job's
-      # GITHUB_TOKEN cannot reach. Checked here, before anything is published,
-      # so a missing credential costs a re-run instead of leaving a half-done
-      # release behind.
-      - name: Package-manager taps need their own credential
-        env:
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
-        run: |
-          if [ -z "${TAP_GITHUB_TOKEN}" ]; then
-            echo "::error::TAP_GITHUB_TOKEN is not set. GoReleaser publishes to angelnicolasc/homebrew-tap, /scoop-bucket and /nur-packages, which the default GITHUB_TOKEN cannot write to. Add a PAT with 'repo' scope as the TAP_GITHUB_TOKEN secret, or drop the brews/scoops/nix sections from .goreleaser.yml."
-            exit 1
-          fi
-
-      # v0.13.0 published this tag and then failed in GoReleaser on a malformed
-      # brews block. The retry died here instead, on `tag already exists`, and
-      # the release could not be completed without hand surgery. The tag is
-      # immutable once the Go proxy has served it, so a re-run must accept the
-      # one already published rather than try to recreate it.
+      # Both signed annotated tags are pushed atomically by the maintainer.
+      # A retry validates their identity and never creates or rewrites a tag.
       - name: Publish the CLI submodule tag
         env:
           TAG: ${{ github.ref_name }}
@@ -147,8 +135,8 @@ jobs:
             python3 .github/scripts/release_check.py --tag "$TAG" --check-tags
             echo "cmd/graymatter/${TAG} already identifies this release commit"
           else
-            git tag "cmd/graymatter/${TAG}" "${TAG}"
-            git push origin "cmd/graymatter/${TAG}"
+            echo "::error::Publish the signed annotated cmd/graymatter/${TAG} tag at this release commit before running the workflow."
+            exit 1
           fi
 
       # GoReleaser builds with the workspace disabled, so the CLI module
@@ -176,9 +164,29 @@ jobs:
           args: release --clean --skip=validate --release-notes=${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Only the tap publishers read this; the release itself stays on the
-          # repository-scoped token.
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      - name: Verify package-manager manifests
+        run: |
+          set -euo pipefail
+          test -s dist/homebrew/Formula/graymatter.rb
+          test -s dist/scoop/graymatter.json
+          test -s dist/nix/pkgs/graymatter/default.nix
+          python3 -m json.tool dist/scoop/graymatter.json > /dev/null
+          nix-instantiate --parse dist/nix/pkgs/graymatter/default.nix > /dev/null
+
+      - name: Preserve package-manager manifests for signed publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-manager-manifests-${{ github.ref_name }}
+          path: |
+            dist/homebrew/Formula/graymatter.rb
+            dist/scoop/graymatter.json
+            dist/nix/pkgs/graymatter/default.nix
+            dist/checksums.txt
+            dist/metadata.json
+          if-no-files-found: error
+          archive: true
+          retention-days: 30
 
       - name: Revert the temporary replace
         if: always()

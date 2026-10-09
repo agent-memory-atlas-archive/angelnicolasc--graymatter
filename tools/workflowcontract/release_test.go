@@ -27,11 +27,56 @@ func TestReleasePreflightBeforePublication(t *testing.T) {
 	// An existing remote CLI tag is checked again rather than being accepted
 	// merely because its name exists.
 	contains(t, ciStep(job, "Publish the CLI submodule tag"), `python3 .github/scripts/release_check.py --tag "$TAG" --check-tags`)
+	tags := ciStep(job, "Publish the CLI submodule tag")
+	contains(t, tags, "Publish the signed annotated cmd/graymatter/${TAG} tag", "exit 1")
+	absent(t, tags, "git tag ", "git push ")
 	snapshot := ciJob(read(t, "maintenance-smoke"), "snapshot")
 	metadata := ciStep(snapshot, "Validate release metadata")
 	contains(t, metadata, "python3 -m unittest discover -s .github/scripts -p 'test_*.py'", "python3 .github/scripts/release_check.py")
 	absent(t, metadata, "--check-tags", "continue-on-error:", "if:", "|| true")
 	stepBefore(t, snapshot, "Validate release metadata", "Build against the checked-out library")
+}
+
+func TestPackageManagerManifestsRequireSignedPublication(t *testing.T) {
+	config := readWorkflow(t, "../../.goreleaser.yml")
+	for _, name := range []string{"brews", "scoops", "nix"} {
+		block := regexp.MustCompile(`(?ms)^` + name + `:\n(.*?)(?:\n[a-z_]+:|\z)`).FindStringSubmatch(config)
+		if len(block) != 2 {
+			t.Fatalf("missing package-manager configuration: %s", name)
+		}
+		contains(t, block[1], "skip_upload: true", "name: angelnicolasc", "email: 108889887+angelnicolasc@users.noreply.github.com")
+		absent(t, block[1], "token:", "skip_upload: auto", "skip_upload: false")
+	}
+	for _, tc := range []struct{ workflow, job, build string }{
+		{"release", "release", "Run GoReleaser"},
+		{"maintenance-smoke", "snapshot", "Build snapshot without publishing"},
+	} {
+		t.Run(tc.workflow, func(t *testing.T) {
+			job := ciJob(read(t, tc.workflow), tc.job)
+			install := ciStep(job, "Install and verify the Nix hash tool")
+			contains(t, install, "sudo apt-get install --no-install-recommends -y nix-bin", "nix-hash --type sha256 --flat --base32 /dev/null")
+			absent(t, install, "continue-on-error:", "if:", "|| true")
+			stepBefore(t, job, "Install and verify the Nix hash tool", tc.build)
+			verify := ciStep(job, "Verify package-manager manifests")
+			contains(t, verify,
+				"test -s dist/homebrew/Formula/graymatter.rb",
+				"test -s dist/scoop/graymatter.json",
+				"test -s dist/nix/pkgs/graymatter/default.nix",
+				"python3 -m json.tool dist/scoop/graymatter.json",
+				"nix-instantiate --parse dist/nix/pkgs/graymatter/default.nix")
+			absent(t, verify, "continue-on-error:", "if:", "|| true")
+			stepBefore(t, job, tc.build, "Verify package-manager manifests")
+			absent(t, job, "TAP_GITHUB_TOKEN", "PRIVATE_KEY", "SSH_PRIVATE_KEY")
+		})
+	}
+	release := ciJob(read(t, "release"), "release")
+	upload := ciStep(release, "Preserve package-manager manifests for signed publication")
+	contains(t, upload,
+		"name: package-manager-manifests-${{ github.ref_name }}",
+		"dist/homebrew/Formula/graymatter.rb", "dist/scoop/graymatter.json", "dist/nix/pkgs/graymatter/default.nix",
+		"dist/checksums.txt", "dist/metadata.json", "if-no-files-found: error", "archive: true")
+	absent(t, upload, "continue-on-error:", "if:")
+	stepBefore(t, release, "Verify package-manager manifests", "Preserve package-manager manifests for signed publication")
 }
 
 func TestUnpublishedVersionWorkspacePreparation(t *testing.T) {
